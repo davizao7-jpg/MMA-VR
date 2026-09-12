@@ -23,9 +23,25 @@
     position:fixed;left:50%;top:60%;transform:translate(-50%,0);color:#ff6666;
     font-size:14px;text-align:center;max-width:80vw;z-index:9;
   }
-  #styleMenu{
-    position:fixed;left:0;top:0;right:0;bottom:0;z-index:20;
+  /* NOVO: tela de cenário - é a primeira a aparecer (por isso fica visível
+     por padrão, igual o #styleMenu era antes); escolher o cenário retinta a
+     arena (ver applyArenaScenario) e libera a tela de estilo em seguida. */
+  #scenarioMenu{
+    position:fixed;left:0;top:0;right:0;bottom:0;z-index:21;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at center, #241414 0%, #000 80%);
+    padding:20px;box-sizing:border-box;
+  }
+  #scenarioMenu h1{
+    color:#fff;font-size:clamp(20px,4vw,32px);letter-spacing:2px;margin:0 0 6px 0;text-align:center;
+  }
+  #scenarioMenu .styleSub{
+    color:#999;font-size:14px;margin:0 0 26px 0;text-align:center;
+  }
+  #styleMenu{
+    display:none;
+    position:fixed;left:0;top:0;right:0;bottom:0;z-index:20;
+    flex-direction:column;align-items:center;justify-content:center;
     background:radial-gradient(ellipse at center, #241414 0%, #000 80%);
     padding:20px;box-sizing:border-box;
   }
@@ -72,6 +88,24 @@
 </style>
 </head>
 <body>
+<div id="scenarioMenu">
+  <h1>ESCOLHA O CENÁRIO</h1>
+  <p class="styleSub">Muda o visual do octógono e da iluminação - dá pra trocar depois, é só recarregar a página.</p>
+  <div class="diffGrid">
+    <button class="styleCard" data-scenario="gym">
+      <span class="styleName">GINÁSIO CLÁSSICO</span>
+      <span class="styleDesc">Luz branca e neutra, arquibancada clara - o visual padrão de treino.</span>
+    </button>
+    <button class="styleCard" data-scenario="night">
+      <span class="styleName">ARENA NOTURNA</span>
+      <span class="styleDesc">Ambiente escuro e dramático, com luz de contorno neon.</span>
+    </button>
+    <button class="styleCard" data-scenario="tournament">
+      <span class="styleName">TORNEIO PROFISSIONAL</span>
+      <span class="styleDesc">Octógono azul de campeonato, iluminação fria e mais intensa.</span>
+    </button>
+  </div>
+</div>
 <div id="styleMenu">
   <h1>ESCOLHA SEU ADVERSÁRIO</h1>
   <p class="styleSub">Cada estilo luta de um jeito diferente - em pé e no chão.</p>
@@ -166,7 +200,8 @@ const ELBOW_RADIUS_BONUS = 0.03;  // cotovelo é menor que a luva - raio de acer
 // ETAPA 2: vida do jogador (antes não existia - só tinha um flash cosmético
 // de "atordoado" igual pra qualquer soco). Ainda sem HUD própria; a ETAPA 4
 // (visão turva/knockdown do jogador) é quem vai reagir visualmente a isso.
-let playerHealth = 100, playerMaxHealth = 100;
+// AJUSTE: vida dobrada (100 -> 200) - o jogador estava morrendo rápido demais.
+let playerHealth = 200, playerMaxHealth = 200;
 
 // ETAPA 2: os 3 padrões de soco do inimigo, cada um com sua duração de
 // animação, dano e o "jeito" de esquivar. `dodgeMode` diz qual checagem de
@@ -182,6 +217,13 @@ const PUNCH_DEFS = {
 const DODGE_LATERAL_MIN = 0.24;   // metros de desvio lateral da cabeça pra escapar do jab
 const DODGE_DUCK_MIN = 0.16;      // metros abaixo da altura normal pra escapar do cruzado
 const DODGE_RETREAT_MIN = 0.16;   // metros de recuo/distância a mais pra escapar do gancho
+// CORREÇÃO: antes o inimigo disparava o soco só pelo timer, sem checar a
+// distância - por isso ele "acertava" o jogador de longe, fora do alcance
+// real do braço dele. Agora só entra na animação de soco se estiver dentro
+// desse alcance (escalado pela distância ideal de cada estilo); se não
+// estiver, o timer é resetado pra um valor curto e ele tenta de novo assim
+// que terminar de se aproximar (ver updateOpponentAI).
+const PUNCH_MAX_RANGE_MULT = 1.3; // multiplica idealDist do estilo pra virar o alcance máximo do soco
 let playerStandHeight = null;     // altura "normal" da cabeça do jogador, calibrada sozinha aos poucos
 
 // ETAPA 3: pontos sensíveis do corpo do inimigo (posições LOCAIS, no espaço
@@ -321,6 +363,40 @@ const DIFFICULTY_LEVELS = {
   },
 };
 let pendingStyleKey = null; // estilo já escolhido na 1ª tela, esperando a dificuldade na 2ª
+
+// NOVO: cenários do octógono, escolhidos numa tela ANTES da de estilo. Cada
+// cenário retina o que já existe (fundo, neblina, luzes, tapete, acolchoado,
+// arquibancada) em vez de recriar geometria nova - assim dá pra trocar o
+// visual na hora, sem precisar reconstruir a arena inteira. Aplicado por
+// applyArenaScenario(), que guarda as referências criadas em buildLights()/
+// buildArena() (arenaSpotlights, arenaFixtures, arenaRimLight, etc.).
+const ARENA_SCENARIOS = {
+  gym: {
+    label:'GINÁSIO CLÁSSICO',
+    background:0xf2f2f0, fogDensity:0.035,
+    matTint:0xffffff, padTint:0xf5f5f2, standTint:0xffffff,
+    spotColor:0xfff2dd, spotIntensity:2.6,
+    rimColor:0xcfe0ff, rimIntensity:0.5,
+    ambientIntensity:0.55, hemiIntensity:0.55,
+  },
+  night: {
+    label:'ARENA NOTURNA',
+    background:0x08080d, fogDensity:0.05,
+    matTint:0x7d88a8, padTint:0x24242e, standTint:0x2b2b35,
+    spotColor:0xbcd2ff, spotIntensity:3.0,
+    rimColor:0xff4dd2, rimIntensity:0.9,
+    ambientIntensity:0.22, hemiIntensity:0.28,
+  },
+  tournament: {
+    label:'TORNEIO PROFISSIONAL',
+    background:0x0d1622, fogDensity:0.03,
+    matTint:0x4a7db3, padTint:0x1c3a5e, standTint:0x24344a,
+    spotColor:0xffffff, spotIntensity:3.2,
+    rimColor:0x4fd1ff, rimIntensity:0.7,
+    ambientIntensity:0.4, hemiIntensity:0.45,
+  },
+};
+let currentScenarioKey = 'gym';
 
 /* ---- Física de agarrão / equilíbrio / queda real (novo) ---- */
 const GRAB_RADIUS = 0.17;          // distância da mão até a parte do corpo pra poder agarrar
@@ -482,6 +558,11 @@ const playerArms = [null, null];
 // (síncrono). Precisa existir antes de init() rodar.
 let opponentRagdollBuilt = false;
 
+// NOVO: referências guardadas pra poder retintar a arena depois, quando o
+// jogador escolhe o cenário no menu (ver buildLights/buildArena/applyArenaScenario).
+let arenaSpotlights = [], arenaFixtures = [], arenaRimLight = null, arenaAmbient = null, arenaHemi = null;
+let arenaMatMaterial = null, arenaPadMat = null, arenaStandMaterial = null;
+
 init();
 
 function init(){
@@ -519,6 +600,7 @@ function init(){
 
   window.addEventListener('resize', onResize);
   setupVRButton();
+  setupScenarioMenu(); // NOVO: tela de escolha de cenário, vem antes da de estilo
   setupStyleMenu(); // ETAPA 5: menu de seleção de inimigo
 
   // O loop de renderização começa AGORA, antes de qualquer coisa ligada à
@@ -1115,6 +1197,21 @@ function setupVRButton(){
 // ETAPA 7: escolher o estilo só leva pra tela de dificuldade agora - quem
 // aplica de fato (opp.style/opp.difficulty) e libera o botão de VR é
 // applyEnemyDifficulty, depois da 2ª escolha (ver setupDifficultyMenu).
+// NOVO: tela de cenário - a PRIMEIRA a aparecer (fica visível por padrão via
+// CSS). Escolher um cenário aplica o retint (applyArenaScenario) e libera a
+// tela de estilo em seguida - o resto do fluxo (estilo -> dificuldade ->
+// botão de VR) continua exatamente igual.
+function setupScenarioMenu(){
+  const scenarioMenu = document.getElementById('scenarioMenu');
+  const styleMenu = document.getElementById('styleMenu');
+  scenarioMenu.querySelectorAll('.styleCard').forEach(card=>{
+    card.addEventListener('click', ()=>{
+      applyArenaScenario(card.dataset.scenario);
+      scenarioMenu.style.display = 'none';
+      styleMenu.style.display = 'flex';
+    });
+  });
+}
 function setupStyleMenu(){
   const menu = document.getElementById('styleMenu');
   const diffMenu = document.getElementById('diffMenu');
@@ -1161,6 +1258,36 @@ function applyEnemyDifficulty(styleKey, diffKey){
   opp.bellyHealth = opp.bellyMaxHealth;
 }
 
+// NOVO: aplica o cenário escolhido no menu RETINTANDO o que buildLights()/
+// buildArena() já criaram (background, neblina, holofotes + luminárias,
+// contorno, ambiente/hemisfério, tapete, acolchoado e arquibancada) em vez
+// de reconstruir a arena inteira - mais barato e mais simples que recriar
+// geometria/luzes do zero.
+function applyArenaScenario(key){
+  const theme = ARENA_SCENARIOS[key] || ARENA_SCENARIOS.gym;
+  currentScenarioKey = key;
+
+  scene.background = new THREE.Color(theme.background);
+  if(scene.fog){
+    scene.fog.color.setHex(theme.background);
+    scene.fog.density = theme.fogDensity;
+  }
+  if(arenaAmbient) arenaAmbient.intensity = theme.ambientIntensity;
+  if(arenaHemi) arenaHemi.intensity = theme.hemiIntensity;
+  arenaSpotlights.forEach(sp=>{
+    sp.color.setHex(theme.spotColor);
+    sp.intensity = theme.spotIntensity;
+  });
+  arenaFixtures.forEach(f=>{ f.material.color.setHex(theme.spotColor); });
+  if(arenaRimLight){
+    arenaRimLight.color.setHex(theme.rimColor);
+    arenaRimLight.intensity = theme.rimIntensity;
+  }
+  if(arenaMatMaterial) arenaMatMaterial.color.setHex(theme.matTint);
+  if(arenaPadMat) arenaPadMat.color.setHex(theme.padTint);
+  if(arenaStandMaterial) arenaStandMaterial.color.setHex(theme.standTint);
+}
+
 function onResize(){
   camera.aspect = window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
@@ -1169,19 +1296,24 @@ function onResize(){
 
 /* ------------------------------ Iluminação ------------------------------ */
 function buildLights(){
-  scene.background = new THREE.Color(0xf2f2f0);
-  scene.fog = new THREE.FogExp2(0xf2f2f0, 0.035);
+  const theme = ARENA_SCENARIOS[currentScenarioKey] || ARENA_SCENARIOS.gym;
+  scene.background = new THREE.Color(theme.background);
+  scene.fog = new THREE.FogExp2(theme.background, theme.fogDensity);
   // ETAPA VISUAL: menos luz ambiente "chapada" e mais luz direcional com
   // sombra de verdade - é a sombra (e não só a cor) que dá volume/relevo
   // real pros corpos e pro tapete, em vez do visual "achatado" de antes.
-  const amb = new THREE.AmbientLight(0xffffff, 0.55);
+  const amb = new THREE.AmbientLight(0xffffff, theme.ambientIntensity);
   scene.add(amb);
-  const hemi = new THREE.HemisphereLight(0xffffff, 0xb8b8c2, 0.55);
+  arenaAmbient = amb;
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xb8b8c2, theme.hemiIntensity);
   scene.add(hemi);
+  arenaHemi = hemi;
 
+  arenaSpotlights = [];
+  arenaFixtures = [];
   const positions = [[1.6,3.2,1.6],[-1.6,3.2,1.6],[1.6,3.2,-1.6],[-1.6,3.2,-1.6]];
   positions.forEach((p,i)=>{
-    const sp = new THREE.SpotLight(0xfff2dd, 2.6, 10, Math.PI/4.5, 0.45, 1.4);
+    const sp = new THREE.SpotLight(theme.spotColor, theme.spotIntensity, 10, Math.PI/4.5, 0.45, 1.4);
     sp.position.set(p[0],p[1],p[2]);
     sp.target.position.set(0,0.9,0);
     // só os 2 holofotes da frente projetam sombra (holofotes de trás
@@ -1194,18 +1326,21 @@ function buildLights(){
       sp.shadow.camera.far = 10;
     }
     scene.add(sp); scene.add(sp.target);
-    const fixture = new THREE.Mesh(new THREE.SphereGeometry(0.08,12,12),
-      new THREE.MeshBasicMaterial({color:0xfff2dd}));
+    const fixtureMat = new THREE.MeshBasicMaterial({color:theme.spotColor});
+    const fixture = new THREE.Mesh(new THREE.SphereGeometry(0.08,12,12), fixtureMat);
     fixture.position.copy(sp.position);
     scene.add(fixture);
+    arenaSpotlights.push(sp);
+    arenaFixtures.push(fixture);
   });
 
   // luz de contorno (rim light) suave vinda de trás/cima do adversário -
   // separa a silhueta dele do fundo e dá aquele "brilho" de borda realista
   // que uma cena só com luz frontal nunca tem.
-  const rim = new THREE.DirectionalLight(0xcfe0ff, 0.5);
+  const rim = new THREE.DirectionalLight(theme.rimColor, theme.rimIntensity);
   rim.position.set(-1.2, 2.6, -2.4);
   scene.add(rim);
+  arenaRimLight = rim;
 }
 
 /* ============================================================
@@ -1308,6 +1443,7 @@ function clampToBoundary(pos, margin){
 
 /* -------------------------------- Arena -------------------------------- */
 function buildArena(){
+  const theme = ARENA_SCENARIOS[currentScenarioKey] || ARENA_SCENARIOS.gym;
   // Raio do octógono em metros. Aumente/diminua conforme o limite de área (guardian)
   // que você configurou no Quest 2 - o ideal é que o diâmetro (R*2) seja um pouco
   // MENOR que o menor lado do seu guardian, pra caber com folga.
@@ -1317,7 +1453,8 @@ function buildArena(){
   // Tapete octogonal
   const matShape = new THREE.CylinderGeometry(R, R, 0.05, 8);
   const matTex = createMatTexture();
-  const matMat = new THREE.MeshStandardMaterial({map: matTex, roughness:0.92, metalness:0.04});
+  const matMat = new THREE.MeshStandardMaterial({map: matTex, roughness:0.92, metalness:0.04, color: theme.matTint});
+  arenaMatMaterial = matMat;
   const mat = new THREE.Mesh(matShape, matMat);
   mat.position.y = -0.025;
   mat.receiveShadow = true; // ETAPA VISUAL: recebe a sombra real dos holofotes/lutadores
@@ -1329,7 +1466,8 @@ function buildArena(){
   // Acolchoado vermelho baixo (apoio estético estilo ringue) + coleta dos vértices
   // do octógono, que servem de limite PADRÃO (fallback) até detectarmos o
   // guardian real do Quest2 (veja buildBoundaryFence / clampToBoundary abaixo).
-  const padMat = new THREE.MeshStandardMaterial({color:0xf5f5f2, roughness:0.9, transparent:true, opacity:0.85});
+  const padMat = new THREE.MeshStandardMaterial({color:theme.padTint, roughness:0.9, transparent:true, opacity:0.85});
+  arenaPadMat = padMat;
   const sides = 8;
   const fallbackPoly = [];
   for(let i=0;i<sides;i++){
@@ -1353,9 +1491,11 @@ function buildArena(){
 
   // arquibancada sugerida (silhueta escura ao fundo)
   const standTex = createStandTexture();
+  const standMat = new THREE.MeshBasicMaterial({map:standTex, side:THREE.BackSide, transparent:true, opacity:0.9, color: theme.standTint});
+  arenaStandMaterial = standMat;
   const stand = new THREE.Mesh(
     new THREE.CylinderGeometry(9,9,4,32,1,true),
-    new THREE.MeshBasicMaterial({map:standTex, side:THREE.BackSide, transparent:true, opacity:0.9})
+    standMat
   );
   stand.position.y = 2;
   scene.add(stand);
@@ -1437,6 +1577,12 @@ function createSkinTexture(baseHex){
   tex.repeat.set(4,4);
   tex.needsUpdate = true;
   tex.anisotropy = 8;
+  // CORREÇÃO: faltava marcar essa textura como sRGB. O renderer usa
+  // renderer.outputEncoding = THREE.sRGBEncoding, e sem isso o Three.js
+  // trata os pixels do canvas (já em sRGB) como se fossem cor linear e
+  // aplica a correção de novo em cima - o resultado é a pele saindo
+  // lavada/clara demais (quase branca) em vez do tom correto.
+  tex.encoding = THREE.sRGBEncoding;
   return tex;
 }
 // ETAPA VISUAL: mapa de relevo (bump) da pele - reaproveita o mesmo ruído de
@@ -1808,7 +1954,7 @@ function buildMMAGlove(scale, padColor, skinMaterial){
 function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl = renderer.xr.getController(i);
-    const glove = buildMMAGlove(1.0, 0x8a0000, null); // formato de mão real (dedos + dorso acolchoado), não mais uma bola só
+    const glove = buildMMAGlove(1.0, 0xc9906a, null); // AJUSTE: cor de pele em vez do dorso vermelho de luva - a mão do jogador não deve ficar colorida
     ctrl.add(glove);
     scene.add(ctrl);
     controllerGroups.push(ctrl);
@@ -2493,7 +2639,7 @@ function tryGrab(ci){
 }
 function releaseGrab(ci){
   grabState[ci] = {active:false, id:null, part:null, obj:null};
-  if(gloveMats[ci]) gloveMats[ci].color.setHex(0x8a0000);
+  if(gloveMats[ci]) gloveMats[ci].color.setHex(0xc9906a); // AJUSTE: volta pro tom de pele (antes era o vermelho da luva)
 }
 
 // Processa os agarrões ativos todo frame: em pé, puxar a perna/tronco/braço
@@ -2753,6 +2899,12 @@ function updateOpponentAI(dt, camXZ){
 
     opp.attackTimer -= dt;
     if(opp.attackTimer<=0 && !opp.attacking){
+      if(dist > idealDist*PUNCH_MAX_RANGE_MULT){
+        // longe demais pra alcançar de verdade - não soca no vácuo, só
+        // tenta de novo daqui a pouco (updateOpponentAI já cuida de
+        // aproximar ele nesse meio tempo, ver aiMode 'approach').
+        opp.attackTimer = 0.15;
+      } else {
       opp.attacking = true; opp.attackT = 0; opp.attackHitDone = false;
       opp.attackSwing = Math.random()<0.5 ? opp.lArmPivot : opp.rArmPivot;
       // jab é o mais comum (soco "de sondagem"), cruzado e gancho mais raros
@@ -2768,6 +2920,7 @@ function updateOpponentAI(dt, camXZ){
       else playerStandHeight = THREE.MathUtils.lerp(playerStandHeight, opp.attackStartHeadPos.y, 0.02);
       // ETAPA 5: estilos mais rápidos (boxe/pressão) socam com mais frequência
       opp.attackTimer = (1.3+Math.random()*1.6) / style.speedMult;
+      }
     }
     if(opp.attacking){
       const def = PUNCH_DEFS[opp.attackType];
@@ -3010,6 +3163,16 @@ function resolveEnemyPunch(def){
   const headNow = camera.getWorldPosition(new THREE.Vector3());
   const distNow = headNow.distanceTo(opp.root.position);
   const distGrew = distNow - opp.attackStartDist;
+
+  // CORREÇÃO (trava extra): mesmo já filtrando pela distância antes de
+  // começar o soco (ver updateOpponentAI), o inimigo continua se movendo
+  // DURANTE a animação - então checa de novo aqui, na hora do impacto, se
+  // ele não ficou fora de alcance nesse meio tempo (ex.: circulando de lado).
+  const idealDist = (opp.style || ENEMY_STYLES.balanced).idealDistance;
+  if(distNow > idealDist*PUNCH_MAX_RANGE_MULT){
+    setStatus('Ele errou! Você estava fora de alcance.');
+    return;
+  }
 
   let dodged = false;
   if(distGrew >= DODGE_RETREAT_MIN){
@@ -3303,34 +3466,21 @@ function playBell(){
   }catch(e){}
 }
 // ETAPA 4: som de pressão constante conforme a vida do jogador cai - um
-// ruído filtrado agudo (tipo zumbido no ouvido) somado a um tom grave
-// (sensação de "pressão"/abafamento), os dois num único GainNode mestre
+// tom grave (sensação de "pressão"/abafamento) num GainNode mestre
 // (`pressureGain`) cujo volume sobe/desce suavemente a cada frame de acordo
 // com o dano acumulado (ver `updatePlayerVisionFX`). Criado só uma vez, na
 // primeira vez que a vida cai - fica tocando (com volume 0 quando ileso) em
 // vez de criar/destruir nós de áudio toda hora.
-let pressureGain, pressureNoiseSrc, pressureToneOsc, pressureToneGain;
+// AJUSTE: removido o ruído/zumbido agudo filtrado (bandpass em 2200Hz) que
+// tocava junto - o jogador achou que estava "chiando" demais; ficou só o
+// rumble grave de pressão.
+let pressureGain, pressureToneOsc, pressureToneGain;
 function ensurePressureSound(){
   if(pressureGain) return;
   ensureAudio();
   pressureGain = audioCtx.createGain();
   pressureGain.gain.value = 0;
   pressureGain.connect(audioCtx.destination);
-
-  const dur = 2;
-  const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate*dur, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for(let i=0;i<data.length;i++){ data[i] = Math.random()*2-1; }
-  pressureNoiseSrc = audioCtx.createBufferSource();
-  pressureNoiseSrc.buffer = buffer;
-  pressureNoiseSrc.loop = true;
-  const noiseFilter = audioCtx.createBiquadFilter();
-  noiseFilter.type = 'bandpass';
-  noiseFilter.frequency.value = 2200; // zumbido agudo de orelha
-  noiseFilter.Q.value = 4;
-  pressureNoiseSrc.connect(noiseFilter);
-  noiseFilter.connect(pressureGain);
-  pressureNoiseSrc.start();
 
   pressureToneOsc = audioCtx.createOscillator();
   pressureToneOsc.type = 'sine';
