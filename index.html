@@ -134,16 +134,47 @@ function init(){
   window.addEventListener('resize', onResize);
   setupVRButton();
 
-  // Ammo() carrega o WASM/asm.js e só resolve quando está pronto pra usar.
-  // Tudo que depende de física (chão, corpos, etc.) entra dentro do .then().
-  Ammo().then(function(AmmoLib){
-    Ammo = AmmoLib;
-    initPhysics();
-    physicsReady = true;
-    console.log('[física] Ammo.js pronto, mundo físico criado.');
-  });
-
+  // O loop de renderização começa AGORA, antes de qualquer coisa ligada à
+  // física. Assim, mesmo que o Ammo.js falhe/demore/não carregue (CDN fora,
+  // rede ruim, etc.), o jogo continua desenhando a cena normalmente - só a
+  // física de verdade (chão físico, bolinha de teste) fica de fora.
   renderer.setAnimationLoop(render);
+
+  initAmmoSafely();
+}
+
+// Chama Ammo() de um jeito que funciona tanto com builds que retornam uma
+// Promise (`Ammo().then(...)`) quanto com essa build clássica (asm.js), que
+// devolve o módulo já pronto, de forma síncrona - sem .then nenhum. Chamar
+// .then em cima do retorno errado era exatamente o que travava tudo antes
+// do renderer.setAnimationLoop rodar, e por isso a tela ficava preta.
+function initAmmoSafely(){
+  try{
+    if(typeof Ammo !== 'function'){
+      console.warn('[física] Ammo.js não carregou (CDN indisponível?). Jogo segue sem física.');
+      return;
+    }
+    const result = Ammo();
+    if(result && typeof result.then === 'function'){
+      // build moderna: retorna Promise
+      result.then(function(AmmoLib){
+        Ammo = AmmoLib;
+        initPhysics();
+        physicsReady = true;
+        console.log('[física] Ammo.js pronto (Promise), mundo físico criado.');
+      }).catch(function(err){
+        console.warn('[física] Ammo.js falhou ao inicializar:', err);
+      });
+    } else {
+      // build clássica: já vem pronto, de forma síncrona
+      Ammo = result;
+      initPhysics();
+      physicsReady = true;
+      console.log('[física] Ammo.js pronto (síncrono), mundo físico criado.');
+    }
+  }catch(err){
+    console.warn('[física] Erro ao iniciar Ammo.js, jogo segue sem física:', err);
+  }
 }
 
 /* -------------------------------- Física: setup -------------------------------- */
