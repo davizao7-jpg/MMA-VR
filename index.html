@@ -53,19 +53,17 @@
   /* ETAPA 7: tela de dificuldade - reaproveita o visual do menu de estilo
      (mesmas classes .styleCard/.styleDesc), só troca o grid pra 3 colunas
      numa faixa só (cabe Fácil/Médio/Difícil lado a lado). */
-  /* ETAPA CENÁRIO: tela de cenário reaproveita o mesmo visual do #diffMenu -
-     por isso os dois seletores dividem as mesmas regras aqui. */
-  #diffMenu, #scenarioMenu{
+  #diffMenu{
     display:none;
     position:fixed;left:0;top:0;right:0;bottom:0;z-index:20;
     flex-direction:column;align-items:center;justify-content:center;
     background:radial-gradient(ellipse at center, #241414 0%, #000 80%);
     padding:20px;box-sizing:border-box;
   }
-  #diffMenu h1, #scenarioMenu h1{
+  #diffMenu h1{
     color:#fff;font-size:clamp(20px,4vw,32px);letter-spacing:2px;margin:0 0 6px 0;text-align:center;
   }
-  #diffMenu .styleSub, #scenarioMenu .styleSub{
+  #diffMenu .styleSub{
     color:#999;font-size:14px;margin:0 0 26px 0;text-align:center;
   }
   .diffGrid{
@@ -111,24 +109,6 @@
     <button class="styleCard" data-difficulty="hard">
       <span class="styleName">DIFÍCIL</span>
       <span class="styleDesc">Vitalidade e recuperação bem altas. Tronco se mexe muito (cabeça difícil de acertar), guarda abre e fecha rápido, e a IA antecipa seus golpes quase na primeira repetição.</span>
-    </button>
-  </div>
-</div>
-<div id="scenarioMenu">
-  <h1>ESCOLHA O CENÁRIO</h1>
-  <p class="styleSub">Só muda o visual do fundo - a luta é a mesma em qualquer um.</p>
-  <div class="diffGrid">
-    <button class="styleCard" data-scenario="arena">
-      <span class="styleName">ARENA CLÁSSICA</span>
-      <span class="styleDesc">O cenário original: octógono com arquibancada ao fundo, iluminação neutra de evento indoor.</span>
-    </button>
-    <button class="styleCard" data-scenario="cage">
-      <span class="styleName">OCTÓGONO REAL</span>
-      <span class="styleDesc">Gaiola de tela de verdade em volta do tapete, arena escura ao fundo - clima de evento profissional.</span>
-    </button>
-    <button class="styleCard" data-scenario="field">
-      <span class="styleName">CAMPO ABERTO</span>
-      <span class="styleDesc">Ao ar livre, num campo florido com um rio ao longe e céu aberto acima.</span>
     </button>
   </div>
 </div>
@@ -341,7 +321,6 @@ const DIFFICULTY_LEVELS = {
   },
 };
 let pendingStyleKey = null; // estilo já escolhido na 1ª tela, esperando a dificuldade na 2ª
-let pendingDiffKey = null;  // dificuldade já escolhida na 2ª tela, esperando o cenário na 3ª
 
 /* ---- Física de agarrão / equilíbrio / queda real (novo) ---- */
 const GRAB_RADIUS = 0.17;          // distância da mão até a parte do corpo pra poder agarrar
@@ -477,6 +456,32 @@ let testBallMesh = null;
 let testBallBody = null;
 let boundaryColliderBodies = []; // paredes físicas estáticas do limite (guardian) - passo 6
 
+// CORREÇÃO: essas constantes precisam existir ANTES de init() rodar, porque
+// init() chama buildPlayerArms() (e updatePlayerArms(), mais abaixo no
+// arquivo, também usa `playerArms`). Antes elas estavam declaradas lá embaixo,
+// bem depois do ponto em que buildPlayerArms() já tinha sido chamada - isso
+// disparava "Cannot access 'playerArms' before initialization" e travava
+// o script inteirinho logo no início, antes até do menu de escolha de
+// adversário e do botão de VR serem configurados (por isso nada respondia
+// a clique nenhum e a opção de entrar no VR nunca aparecia).
+const UP_Y = new THREE.Vector3(0,1,0);
+const tmpVec3Seg = new THREE.Vector3();
+const tmpVec3Head = new THREE.Vector3();
+const tmpQuatHead = new THREE.Quaternion();
+const tmpEulerHead = new THREE.Euler();
+const tmpQuatYaw = new THREE.Quaternion();
+const tmpVec3Hand = new THREE.Vector3();
+const tmpVec3Shoulder = new THREE.Vector3();
+const tmpVec3Mid = new THREE.Vector3();
+const tmpVec3Bend = new THREE.Vector3();
+const playerArms = [null, null];
+
+// CORREÇÃO: mesmo problema de ordem - `opponentRagdollBuilt` é lida dentro de
+// maybeBuildOpponentRagdoll(), que pode rodar de dentro de init() (via
+// initAmmoSafely/initPhysics) quando o Ammo.js carrega no formato clássico
+// (síncrono). Precisa existir antes de init() rodar.
+let opponentRagdollBuilt = false;
+
 init();
 
 function init(){
@@ -504,7 +509,6 @@ function init(){
 
   buildLights();
   buildArena();
-  applyScenario('arena'); // ETAPA CENÁRIO: default até o jogador escolher no menu (ver setupScenarioMenu)
   buildStatusPanel();
   buildBell();
   buildBloodTexture();
@@ -765,7 +769,6 @@ function addConeTwist(bodyA, bodyB, frameInA, frameInB, swing1, swing2, twist){
 // sempre termina antes; build moderna via Promise pode terminar depois).
 // Chamada nos dois lugares onde isso pode ficar pronto: fim de initPhysics()
 // e logo depois de buildOpponent() lá embaixo.
-let opponentRagdollBuilt = false;
 function maybeBuildOpponentRagdoll(){
   if(opponentRagdollBuilt) return;
   if(!physicsReady || !physicsWorld) return;
@@ -1110,10 +1113,8 @@ function setupVRButton(){
 // instruções) só aparece DEPOIS de escolher um estilo - antes disso ficam
 // escondidos via CSS (display:none em #vrBtn/#info).
 // ETAPA 7: escolher o estilo só leva pra tela de dificuldade agora - quem
-// aplica de fato (opp.style/opp.difficulty) é applyEnemyDifficulty, depois
-// da 2ª escolha. ETAPA CENÁRIO: e a dificuldade leva pra tela de cenário
-// (3ª escolha) - só ali o botão de VR finalmente aparece (ver
-// setupScenarioMenu).
+// aplica de fato (opp.style/opp.difficulty) e libera o botão de VR é
+// applyEnemyDifficulty, depois da 2ª escolha (ver setupDifficultyMenu).
 function setupStyleMenu(){
   const menu = document.getElementById('styleMenu');
   const diffMenu = document.getElementById('diffMenu');
@@ -1125,37 +1126,22 @@ function setupStyleMenu(){
     });
   });
   setupDifficultyMenu();
-  setupScenarioMenu();
 }
 // ETAPA 7: tela de dificuldade - só aparece depois do estilo já escolhido
-// (pendingStyleKey). Agora leva pra tela de cenário em vez de liberar o VR direto.
+// (pendingStyleKey). É aqui que o botão de VR finalmente aparece.
 function setupDifficultyMenu(){
   const diffMenu = document.getElementById('diffMenu');
-  const scenarioMenu = document.getElementById('scenarioMenu');
-  diffMenu.querySelectorAll('.styleCard').forEach(card=>{
-    card.addEventListener('click', ()=>{
-      pendingDiffKey = card.dataset.difficulty;
-      applyEnemyDifficulty(pendingStyleKey, pendingDiffKey);
-      diffMenu.style.display = 'none';
-      scenarioMenu.style.display = 'flex';
-    });
-  });
-}
-// ETAPA CENÁRIO: 3ª e última tela - escolhe só o visual de fundo (não mexe
-// em vitalidade/dificuldade/IA). Só aqui o botão de VR finalmente aparece.
-function setupScenarioMenu(){
-  const scenarioMenu = document.getElementById('scenarioMenu');
   const vrBtn = document.getElementById('vrBtn');
   const info = document.getElementById('info');
-  scenarioMenu.querySelectorAll('.styleCard').forEach(card=>{
+  diffMenu.querySelectorAll('.styleCard').forEach(card=>{
     card.addEventListener('click', ()=>{
-      const scenarioKey = card.dataset.scenario;
-      applyScenario(scenarioKey);
-      scenarioMenu.style.display = 'none';
+      const diffKey = card.dataset.difficulty;
+      applyEnemyDifficulty(pendingStyleKey, diffKey);
+      diffMenu.style.display = 'none';
       vrBtn.style.display = 'block';
       info.style.display = 'block';
       const styleLabel = (ENEMY_STYLES[pendingStyleKey]||ENEMY_STYLES.balanced).label;
-      const diffLabel = (DIFFICULTY_LEVELS[pendingDiffKey]||DIFFICULTY_LEVELS.easy).label;
+      const diffLabel = (DIFFICULTY_LEVELS[diffKey]||DIFFICULTY_LEVELS.easy).label;
       vrBtn.textContent = 'ENTRAR NO OCTÓGONO (VR) — ' + styleLabel + ' / ' + diffLabel;
     });
   });
@@ -1365,11 +1351,14 @@ function buildArena(){
   // Limite padrão = o próprio octógono, até o guardian real ser detectado (ver setupVRButton)
   buildBoundaryFence(fallbackPoly);
 
-  // ETAPA CENÁRIO: o fundo (arquibancada/gaiola/campo, céu, fog) não é mais
-  // fixo aqui - vira responsabilidade de applyScenario(), escolhido no menu
-  // depois do estilo/dificuldade (ver setupScenarioMenu). O tapete, o
-  // acolchoado e a cerca de segurança acima continuam os mesmos sempre,
-  // em qualquer cenário - só o fundo distante muda.
+  // arquibancada sugerida (silhueta escura ao fundo)
+  const standTex = createStandTexture();
+  const stand = new THREE.Mesh(
+    new THREE.CylinderGeometry(9,9,4,32,1,true),
+    new THREE.MeshBasicMaterial({map:standTex, side:THREE.BackSide, transparent:true, opacity:0.9})
+  );
+  stand.position.y = 2;
+  scene.add(stand);
 }
 
 function createMatTexture(){
@@ -1496,279 +1485,6 @@ function createStandTexture(){
     ctx.beginPath();
     ctx.arc(Math.random()*1024, 150+Math.random()*250, Math.random()*1.6, 0, Math.PI*2);
     ctx.fill();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.needsUpdate = true;
-  return tex;
-}
-
-/* ============================================================
-   ETAPA CENÁRIO: 3 fundos escolhíveis no menu (depois do estilo e da
-   dificuldade - ver setupScenarioMenu). O tapete, o acolchoado e a cerca de
-   segurança (guardian) continuam SEMPRE os mesmos, em qualquer cenário -
-   só muda o que está mais longe: céu/fog/arquibancada/gaiola/campo. Tudo
-   feito com textura procedural em canvas (sem baixar nada da internet) e
-   de propósito discreto - é só pano de fundo, não deve competir com a luta.
-   ============================================================ */
-const SCENARIO_LABELS = { arena:'Arena Clássica', cage:'Octógono Real', field:'Campo Aberto' };
-
-function disposeScenarioGroup(){
-  if(window.__scenarioGroup){
-    scene.remove(window.__scenarioGroup);
-    window.__scenarioGroup.traverse(o=>{
-      if(o.geometry) o.geometry.dispose();
-      if(o.material){
-        if(o.material.map) o.material.map.dispose();
-        o.material.dispose();
-      }
-    });
-  }
-}
-
-// Troca o cenário: descarta o grupo de cenário anterior, ajusta fundo/neblina
-// e builda o novo grupo. Chamado com o default 'arena' no init() e de novo
-// (com a escolha real do jogador) pelo menu de cenário.
-function applyScenario(key){
-  disposeScenarioGroup();
-  let group;
-  if(key==='cage'){
-    scene.background = new THREE.Color(0x0a0a0e);
-    scene.fog = new THREE.FogExp2(0x0a0a0e, 0.05); // névoa mais densa = fundo escuro se dilui rápido, sem pesar
-    group = buildScenarioCage();
-  } else if(key==='field'){
-    scene.background = new THREE.Color(0xbfe0f5);
-    scene.fog = new THREE.FogExp2(0xcfe9f5, 0.012); // bem mais rala - precisa enxergar o rio/céu ao longe
-    group = buildScenarioField();
-  } else {
-    key = 'arena';
-    scene.background = new THREE.Color(0xf2f2f0);
-    scene.fog = new THREE.FogExp2(0xf2f2f0, 0.035); // cenário original, sem mudança
-    group = buildScenarioArena();
-  }
-  window.__scenarioGroup = group;
-  window.__scenarioKey = key;
-}
-
-// Cenário 1 (ORIGINAL, mantido): arquibancada clara ao fundo, igual sempre foi.
-function buildScenarioArena(){
-  const group = new THREE.Group();
-  const standTex = createStandTexture();
-  const stand = new THREE.Mesh(
-    new THREE.CylinderGeometry(9,9,4,32,1,true),
-    new THREE.MeshBasicMaterial({map:standTex, side:THREE.BackSide, transparent:true, opacity:0.9, fog:true})
-  );
-  stand.position.y = 2;
-  group.add(stand);
-  scene.add(group);
-  return group;
-}
-
-// Cenário 2 (NOVO): gaiola de tela de verdade (saia sólida + tela vazada +
-// postes/cano no topo), estilo cage de evento profissional, com uma arena
-// escura e discreta ao fundo - as luzes de combate (buildLights) continuam
-// as mesmas, então o lutador fica sempre bem visível mesmo com fundo escuro.
-function buildScenarioCage(){
-  const group = new THREE.Group();
-  const R = (window.ARENA_R || 3.2) + 0.85; // um pouco além da cerca de segurança/tapete, sem atrapalhar
-  const sides = 8;
-  const skirtH = 0.4, meshH = 1.7, postH = skirtH+meshH;
-
-  const skirtMat = new THREE.MeshStandardMaterial({color:0x0c0c0e, roughness:0.7, metalness:0.3});
-  const skirt = new THREE.Mesh(new THREE.CylinderGeometry(R,R,skirtH,sides,1,true), skirtMat);
-  skirt.position.y = skirtH/2;
-  group.add(skirt);
-
-  const meshTex = createChainLinkTexture();
-  meshTex.repeat.set(sides*2, 3);
-  const meshMat = new THREE.MeshStandardMaterial({map:meshTex, color:0x222222, transparent:true, side:THREE.DoubleSide, roughness:0.6, metalness:0.5});
-  const cageMesh = new THREE.Mesh(new THREE.CylinderGeometry(R,R,meshH,sides,1,true), meshMat);
-  cageMesh.position.y = skirtH + meshH/2;
-  group.add(cageMesh);
-
-  const postMat = new THREE.MeshStandardMaterial({color:0x151515, roughness:0.4, metalness:0.6});
-  for(let i=0;i<sides;i++){
-    const a0 = (i/sides)*Math.PI*2, a1 = ((i+1)/sides)*Math.PI*2;
-    const x0 = Math.cos(a0)*R, z0 = Math.sin(a0)*R;
-    const x1 = Math.cos(a1)*R, z1 = Math.sin(a1)*R;
-
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,postH,8), postMat);
-    post.position.set(x0, postH/2, z0);
-    group.add(post);
-
-    const segLen = Math.hypot(x1-x0, z1-z0);
-    const dir = new THREE.Vector3(x1-x0, 0, z1-z0).normalize();
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,segLen,8), postMat);
-    bar.position.set((x0+x1)/2, postH, (z0+z1)/2);
-    bar.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
-    group.add(bar);
-  }
-
-  const venueTex = createDarkVenueTexture();
-  const venue = new THREE.Mesh(
-    new THREE.CylinderGeometry(11,11,5,32,1,true),
-    new THREE.MeshBasicMaterial({map:venueTex, side:THREE.BackSide, transparent:true, opacity:0.9, fog:true})
-  );
-  venue.position.y = 2.3;
-  group.add(venue);
-
-  scene.add(group);
-  return group;
-}
-
-// Cenário 3 (NOVO): campo aberto florido, rio ao longe e céu aberto - tudo
-// em tons suaves/dessaturados de propósito (é só paisagem, não deve chamar
-// mais atenção que o próprio combate).
-function buildScenarioField(){
-  const group = new THREE.Group();
-
-  const skyTex = createSkyTexture();
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(45, 24, 16),
-    new THREE.MeshBasicMaterial({map:skyTex, side:THREE.BackSide, fog:false})
-  );
-  group.add(sky);
-
-  const groundTex = createFieldTexture();
-  const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(40, 48),
-    new THREE.MeshStandardMaterial({map:groundTex, roughness:1})
-  );
-  ground.rotation.x = -Math.PI/2;
-  ground.position.y = -0.03; // um pouco abaixo do tapete, sem z-fighting
-  ground.receiveShadow = true;
-  group.add(ground);
-
-  // faixa de rio ao longe, numa parte do horizonte só (não dá volta inteira)
-  const river = new THREE.Mesh(
-    new THREE.RingGeometry(15, 18.5, 64, 1, 0, Math.PI*0.6),
-    new THREE.MeshStandardMaterial({color:0x74add6, roughness:0.2, metalness:0.2, transparent:true, opacity:0.88})
-  );
-  river.rotation.x = -Math.PI/2;
-  river.position.y = -0.02;
-  group.add(river);
-
-  const treeTex = createTreeLineTexture();
-  const trees = new THREE.Mesh(
-    new THREE.CylinderGeometry(24,24,3.4,32,1,true),
-    new THREE.MeshBasicMaterial({map:treeTex, side:THREE.BackSide, transparent:true, opacity:0.6, fog:true})
-  );
-  trees.position.y = 1.5;
-  group.add(trees);
-
-  scene.add(group);
-  return group;
-}
-
-// céu com gradiente + sol suave + nuvens bem discretas
-function createSkyTexture(){
-  const w=1024, h=512;
-  const c = document.createElement('canvas'); c.width=w; c.height=h;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createLinearGradient(0,0,0,h);
-  grad.addColorStop(0,'#3f7fd1');
-  grad.addColorStop(0.55,'#9cc7ea');
-  grad.addColorStop(0.82,'#dff0f7');
-  grad.addColorStop(1,'#f3ede0');
-  ctx.fillStyle = grad; ctx.fillRect(0,0,w,h);
-  const sunX=w*0.72, sunY=h*0.4;
-  const sunGlow = ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,150);
-  sunGlow.addColorStop(0,'rgba(255,250,225,0.85)');
-  sunGlow.addColorStop(1,'rgba(255,250,225,0)');
-  ctx.fillStyle = sunGlow; ctx.fillRect(0,0,w,h);
-  ctx.fillStyle = 'rgba(255,255,255,0.3)';
-  for(let i=0;i<12;i++){
-    const cx = Math.random()*w, cy = h*0.16+Math.random()*h*0.26;
-    for(let j=0;j<5;j++){
-      const rx = 28+Math.random()*48, ry = 10+Math.random()*12;
-      ctx.beginPath(); ctx.ellipse(cx+j*24-48, cy, rx, ry, 0, 0, Math.PI*2); ctx.fill();
-    }
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// grama com pontinhos de flor espalhados, bem pequenos e esparsos de propósito
-function createFieldTexture(){
-  const S = 1024;
-  const c = document.createElement('canvas'); c.width=S; c.height=S;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createRadialGradient(S/2,S/2,S*0.05,S/2,S/2,S*0.55);
-  grad.addColorStop(0,'#6fa050');
-  grad.addColorStop(1,'#4d7a39');
-  ctx.fillStyle = grad; ctx.fillRect(0,0,S,S);
-  for(let i=0;i<5000;i++){
-    const g = 90+Math.random()*70;
-    ctx.fillStyle = `rgba(${(g*0.45)|0},${g|0},${(g*0.32)|0},0.22)`;
-    ctx.fillRect(Math.random()*S, Math.random()*S, 3, 3);
-  }
-  const flowerColors = ['#f4f1e6','#f4d35e','#e07a9a','#c9a6f2'];
-  for(let i=0;i<240;i++){
-    ctx.fillStyle = flowerColors[(Math.random()*flowerColors.length)|0];
-    const x = Math.random()*S, y = Math.random()*S;
-    const r = 1.5+Math.random()*2.2;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// silhueta baixa de árvores no horizonte, tom esverdeado bem discreto
-function createTreeLineTexture(){
-  const w=1024, h=256;
-  const c = document.createElement('canvas'); c.width=w; c.height=h;
-  const ctx = c.getContext('2d');
-  ctx.clearRect(0,0,w,h);
-  ctx.fillStyle = 'rgba(40,60,40,0.5)';
-  ctx.fillRect(0,h*0.62,w,h*0.38);
-  ctx.fillStyle = 'rgba(58,84,54,0.75)';
-  for(let x=0;x<w;x+=26){
-    const r = 16+Math.random()*14;
-    const y = h*0.62+Math.random()*10;
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// tela losangular (chain-link) - só as linhas têm alpha, o resto fica
-// transparente de verdade (canvas nasce transparente e só desenhamos os traços)
-function createChainLinkTexture(){
-  const S = 512;
-  const c = document.createElement('canvas'); c.width=S; c.height=S;
-  const ctx = c.getContext('2d');
-  ctx.clearRect(0,0,S,S);
-  ctx.strokeStyle = 'rgba(80,80,86,0.85)';
-  ctx.lineWidth = 2;
-  const step = 24;
-  for(let x=-S; x<S*2; x+=step){
-    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x+S,S); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x,S); ctx.lineTo(x+S,0); ctx.stroke();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-// fundo de arena escura (evento profissional) - poucos pontinhos de luz
-// distante, bem esparsos, só pra sugerir plateia/refletores sem chamar atenção
-function createDarkVenueTexture(){
-  const w=1024, h=512;
-  const c = document.createElement('canvas'); c.width=w; c.height=h;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createLinearGradient(0,0,0,h);
-  grad.addColorStop(0,'#050507');
-  grad.addColorStop(0.55,'#111116');
-  grad.addColorStop(1,'#1c1c22');
-  ctx.fillStyle = grad; ctx.fillRect(0,0,w,h);
-  ctx.fillStyle = 'rgba(230,220,190,0.5)';
-  for(let i=0;i<140;i++){
-    const x = Math.random()*w, y = h*0.2+Math.random()*h*0.35;
-    ctx.beginPath(); ctx.arc(x,y,Math.random()*1.4,0,Math.PI*2); ctx.fill();
   }
   const tex = new THREE.CanvasTexture(c);
   tex.needsUpdate = true;
@@ -2112,18 +1828,6 @@ function buildControllers(){
    cabeça/câmera, e a mão), com uma leve flexão pra fora e pra baixo pra não
    virar uma linha reta perfeita entre ombro e mão - a mesma ideia usada no
    braço do adversário (que é todo animado, nunca sensoreado). */
-const UP_Y = new THREE.Vector3(0,1,0);
-const tmpVec3Seg = new THREE.Vector3();
-const tmpVec3Head = new THREE.Vector3();
-const tmpQuatHead = new THREE.Quaternion();
-const tmpEulerHead = new THREE.Euler();
-const tmpQuatYaw = new THREE.Quaternion();
-const tmpVec3Hand = new THREE.Vector3();
-const tmpVec3Shoulder = new THREE.Vector3();
-const tmpVec3Mid = new THREE.Vector3();
-const tmpVec3Bend = new THREE.Vector3();
-const playerArms = [null, null];
-
 function buildPlayerArms(){
   const mat = new THREE.MeshStandardMaterial({color:0xc9906a, roughness:0.7});
   for(let ci=0; ci<2; ci++){
