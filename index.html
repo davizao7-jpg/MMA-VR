@@ -25,15 +25,27 @@
 </head>
 <body>
 <button id="vrBtn">ENTRAR NO OCTÓGONO (VR)</button>
-<div id="info">Meta Quest 2: abra este link no Navegador do Quest. Soque de verdade, avance o corpo pra derrubar, envolva o pescoço com as duas mãos e segure pra finalizar. Configure um limite de area (guardian) de pelo menos 6,5m x 6,5m para melhor aproveitamento.</div>
+<div id="info">Meta Quest 2: abra este link no Navegador do Quest. Soque de verdade. Pra derrubar: encoste a mão na perna dele e aperte o GATILHO pra agarrar, depois puxe de verdade - ele cai com a força e direção do seu puxão. No chão, agarrado, você pode arrastar o corpo dele pra qualquer lado; solte o gatilho pra largar. Envolva o pescoço com as duas mãos e segure pra finalizar (mata-leão). Configure um limite de área (guardian) de pelo menos 6,5m x 6,5m para melhor aproveitamento.</div>
 <div id="noxr"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ammo.js@0.0.10/ammo.js"></script>
 <script>
 /* ==========================================================================
    OCTÓGONO VR - protótipo de luta de MMA em WebXR (Meta Quest 2)
-   - Sem botões de ação: soco = velocidade real da mão perto do adversário
-   - Queda = avançar o corpo (empurrão) perto do adversário em pé
+   - Soco = velocidade real da mão perto do adversário
+   - AGARRÃO (novo): aperte o GATILHO (trigger) com a mão encostada na perna,
+     braço ou tronco dele para agarrar. Solte o gatilho pra largar.
+   - Queda (novo): NÃO é mais uma animação pronta. Você precisa agarrar a
+     perna dele e puxar de verdade - isso reduz o "equilíbrio" dele em tempo
+     real. Quando o equilíbrio esgota, ele tomba fisicamente na direção e
+     com a força do seu puxão (a velocidade real da sua mão vira a física da
+     queda: eixo de rotação, velocidade angular e impulso de posição).
+   - No chão: agarrando qualquer parte dele você pode ARRASTAR o corpo dele
+     pro lado que quiser (posicionamento real). Ele pesa e tenta se levantar
+     sozinho com o tempo; se você estiver com ele agarrado (pressionando),
+     ele demora muito mais pra levantar. Se ele já estiver no meio do
+     movimento de levantar e você agarrar de novo, ele volta a cair.
    - Ground and pound = socar a cabeça dele enquanto está caído
    - Finalização (mata-leão) = as duas mãos perto do pescoço dele, segurando
    - Sem barra de vida: dano só aparece como sangue, cambaleio e desmaio
@@ -54,9 +66,25 @@ const HEAD_RADIUS = 0.15;
 const TORSO_RADIUS = 0.26;
 const NECK_RADIUS = 0.17;
 const CHOKE_TIME_NEEDED = 4.2;    // segundos segurando o pescoço
-const TAKEDOWN_RANGE = 0.70;
-const TAKEDOWN_COOLDOWN = 1.1;
-let lastTakedownAttempt = -99;
+
+/* ---- Física de agarrão / equilíbrio / queda real (novo) ---- */
+const GRAB_RADIUS = 0.17;          // distância da mão até a parte do corpo pra poder agarrar
+const STABILITY_MAX = 1.0;
+const STABILITY_RECOVER_RATE = 0.12;   // recupera equilíbrio sozinho (por segundo) quando não é puxado
+const LEG_PULL_FACTOR = 1.15;      // puxar a perna é o jeito mais eficaz de derrubar
+const ARM_PULL_FACTOR = 0.45;      // puxar o braço desequilibra menos
+const TORSO_PULL_FACTOR = 0.70;    // puxar o tronco (clinch/queda de corpo a corpo)
+const CLINCH_DRAG_FACTOR = 0.18;   // o quanto ele se desloca de pé quando você puxa (clinch real)
+const GROUND_DRAG_FACTOR = 0.55;   // o quanto ele se desloca no chão quando você arrasta (peso dele)
+const GETUP_RATE = 0.19;           // progresso de "levantar" por segundo, sem ninguém segurando
+const GETUP_RATE_PINNED = 0.02;    // progresso de "levantar" por segundo, se você tiver ele agarrado
+const FALL_GRAVITY = 9.8;
+
+let gloveMats = [];
+let grabState = [
+  {active:false, id:null, part:null, obj:null},
+  {active:false, id:null, part:null, obj:null}
+];
 
 let bloodTex = null;
 const activeParticles = [];
@@ -65,11 +93,24 @@ const bloodDecalCap = 70;
 let statusPanel, statusCtx, statusTex;
 let bell;
 
+/* ============================================================
+   FÍSICA (Ammo.js / Bullet) - ETAPA 1: alicerce
+   Aqui só existe: mundo físico + chão físico + 1 bolinha de teste.
+   Nas próximas etapas isso vira o corpo (ragdoll) do adversário.
+   ============================================================ */
+let physicsWorld = null;   // btDiscreteDynamicsWorld
+let physicsReady = false;  // true quando o Ammo terminou de carregar
+let tmpTrans = null;       // btTransform reutilizável (evita criar objeto toda hora)
+const rigidBodies = [];    // { mesh: THREE.Mesh, body: btRigidBody } - tudo que precisa
+                            // sincronizar posição/rotação do Ammo pro Three.js a cada frame
+let testBallMesh = null;
+let testBallBody = null;
+
 init();
 
 function init(){
   scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x000000, 0.045);
+  scene.fog = new THREE.FogExp2(0xf2f2f0, 0.035);
 
   camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.05, 60);
 
@@ -93,7 +134,96 @@ function init(){
   window.addEventListener('resize', onResize);
   setupVRButton();
 
+  // Ammo() carrega o WASM/asm.js e só resolve quando está pronto pra usar.
+  // Tudo que depende de física (chão, corpos, etc.) entra dentro do .then().
+  Ammo().then(function(AmmoLib){
+    Ammo = AmmoLib;
+    initPhysics();
+    physicsReady = true;
+    console.log('[física] Ammo.js pronto, mundo físico criado.');
+  });
+
   renderer.setAnimationLoop(render);
+}
+
+/* -------------------------------- Física: setup -------------------------------- */
+function initPhysics(){
+  const collisionConfiguration = new Ammo.btDefaultCollisionConfiguration();
+  const dispatcher = new Ammo.btCollisionDispatcher(collisionConfiguration);
+  const broadphase = new Ammo.btDbvtBroadphase();
+  const solver = new Ammo.btSequentialImpulseConstraintSolver();
+  physicsWorld = new Ammo.btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration);
+  physicsWorld.setGravity(new Ammo.btVector3(0, -9.8, 0));
+
+  tmpTrans = new Ammo.btTransform();
+
+  buildPhysicsFloor();
+  buildTestBall();
+}
+
+// Chão físico estático (massa 0) do tamanho do octógono, na mesma altura do tapete visual.
+function buildPhysicsFloor(){
+  const R0 = window.ARENA_R || 3.2;
+  const thickness = 0.1;
+
+  const shape = new Ammo.btBoxShape(new Ammo.btVector3(R0, thickness/2, R0));
+  const transform = new Ammo.btTransform();
+  transform.setIdentity();
+  transform.setOrigin(new Ammo.btVector3(0, -thickness/2, 0)); // topo do chão fica em y=0
+  const motionState = new Ammo.btDefaultMotionState(transform);
+
+  const localInertia = new Ammo.btVector3(0, 0, 0); // massa 0 = estático, sem inércia
+  const rbInfo = new Ammo.btRigidBodyConstructionInfo(0, motionState, shape, localInertia);
+  const body = new Ammo.btRigidBody(rbInfo);
+  body.setFriction(0.9);
+  body.setRestitution(0.2);
+  physicsWorld.addRigidBody(body);
+}
+
+// Bolinha de teste: cai do alto e quica no chão físico.
+// Serve só pra você confirmar, no Quest2, que a física está funcionando de verdade.
+// Vai embora quando a gente ligar a física no corpo do adversário.
+function buildTestBall(){
+  const radius = 0.12;
+  testBallMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 16, 16),
+    new THREE.MeshStandardMaterial({color:0x2266ff, roughness:0.4, metalness:0.2})
+  );
+  scene.add(testBallMesh);
+
+  const shape = new Ammo.btSphereShape(radius);
+  const transform = new Ammo.btTransform();
+  transform.setIdentity();
+  transform.setOrigin(new Ammo.btVector3(0, 2.5, -1.0));
+  const motionState = new Ammo.btDefaultMotionState(transform);
+
+  const mass = 0.6;
+  const localInertia = new Ammo.btVector3(0, 0, 0);
+  shape.calculateLocalInertia(mass, localInertia);
+  const rbInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, shape, localInertia);
+  testBallBody = new Ammo.btRigidBody(rbInfo);
+  testBallBody.setRestitution(0.55);
+  testBallBody.setFriction(0.7);
+  physicsWorld.addRigidBody(testBallBody);
+
+  rigidBodies.push({mesh: testBallMesh, body: testBallBody});
+}
+
+// Roda a simulação e copia a posição/rotação de cada corpo físico pro mesh Three.js correspondente.
+function stepPhysics(dt){
+  if(!physicsReady) return;
+  physicsWorld.stepSimulation(dt, 10);
+
+  for(let i=0;i<rigidBodies.length;i++){
+    const entry = rigidBodies[i];
+    const ms = entry.body.getMotionState();
+    if(!ms) continue;
+    ms.getWorldTransform(tmpTrans);
+    const p = tmpTrans.getOrigin();
+    const q = tmpTrans.getRotation();
+    entry.mesh.position.set(p.x(), p.y(), p.z());
+    entry.mesh.quaternion.set(q.x(), q.y(), q.z(), q.w());
+  }
 }
 
 /* ---------------------------- VR bootstrap ---------------------------- */
@@ -125,6 +255,22 @@ function setupVRButton(){
       xrSessionActive = true;
       playBell();
       setStatus('LUTA!');
+
+      // Tenta pegar o limite REAL configurado no Quest2 (guardian) e refaz a
+      // cerca exatamente nesse formato. Se não conseguir (guardian não
+      // configurado, "Passthrough sempre" sem guardian fixo, etc.), o jogo
+      // continua usando o octógono padrão como limite de segurança.
+      session.requestReferenceSpace('bounded-floor').then(boundedSpace=>{
+        const geo = boundedSpace.boundsGeometry;
+        if(geo && geo.length>=3){
+          const poly = geo.map(p=>({x:p.x, z:p.z}));
+          buildBoundaryFence(poly);
+          console.log('[guardian] limite real detectado com', poly.length, 'pontos - cerca ajustada.');
+        }
+      }).catch(()=>{
+        console.log('[guardian] não disponível - usando o octógono padrão como limite.');
+      });
+
       session.addEventListener('end', ()=>{
         xrSessionActive = false;
         btn.style.display = 'block';
@@ -144,10 +290,11 @@ function onResize(){
 
 /* ------------------------------ Iluminação ------------------------------ */
 function buildLights(){
-  scene.background = new THREE.Color(0x020202);
-  const amb = new THREE.AmbientLight(0x404050, 1.1);
+  scene.background = new THREE.Color(0xf2f2f0);
+  scene.fog = new THREE.FogExp2(0xf2f2f0, 0.035);
+  const amb = new THREE.AmbientLight(0xffffff, 1.4);
   scene.add(amb);
-  const hemi = new THREE.HemisphereLight(0x777788, 0x110000, 0.7);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xdadada, 0.9);
   scene.add(hemi);
 
   const positions = [[1.6,3.2,1.6],[-1.6,3.2,1.6],[1.6,3.2,-1.6],[-1.6,3.2,-1.6]];
@@ -161,6 +308,104 @@ function buildLights(){
     fixture.position.copy(sp.position);
     scene.add(fixture);
   });
+}
+
+/* ============================================================
+   FRONTEIRA REAL (guardian) - substitui a jaula fixa por um limite
+   que segue exatamente a área que você configurou no Quest2.
+   - window.BOUNDARY_POLY: lista de pontos {x,z} do limite atual
+   - buildBoundaryFence(poly): desenha a cerca (baixa, quase
+     transparente, estilo corda de ringue de boxe) nesse polígono
+   - clampToBoundary(pos, margin): empurra qualquer posição de volta
+     pra dentro do polígono - é isso que impede o adversário de
+     escapar do limite, em QUALQUER estado (em pé, caindo, no chão)
+   ============================================================ */
+function polygonCentroid(poly){
+  let cx=0, cz=0;
+  poly.forEach(p=>{ cx+=p.x; cz+=p.z; });
+  return {x: cx/poly.length, z: cz/poly.length};
+}
+
+function disposeFenceGroup(){
+  if(window.__fenceGroup){
+    scene.remove(window.__fenceGroup);
+    window.__fenceGroup.traverse(o=>{
+      if(o.geometry) o.geometry.dispose();
+      if(o.material) o.material.dispose();
+    });
+  }
+}
+
+// Cerca baixa e quase transparente (cordas estilo ringue de boxe), seguindo
+// exatamente o polígono do limite - real (guardian) ou o octógono padrão.
+function buildBoundaryFence(poly){
+  if(!poly || poly.length<3) return;
+  disposeFenceGroup();
+
+  const group = new THREE.Group();
+  const ropeMat = new THREE.MeshStandardMaterial({color:0xff2222, transparent:true, opacity:0.22, roughness:0.5});
+  const postMat = new THREE.MeshStandardMaterial({color:0xe8e8e4, transparent:true, opacity:0.35, roughness:0.4, metalness:0.3});
+  const ropeHeights = [0.35, 0.62, 0.90]; // baixo, estilo boxe - não tampa a visão
+  const ropeRadius = 0.012;
+  const up = new THREE.Vector3(0,1,0);
+
+  poly.forEach((p, i)=>{
+    const q = poly[(i+1)%poly.length];
+    const dx = q.x-p.x, dz = q.z-p.z;
+    const len = Math.hypot(dx,dz);
+    if(len < 0.05) return;
+    const dir = new THREE.Vector3(dx,0,dz).normalize();
+    const midx = (p.x+q.x)/2, midz = (p.z+q.z)/2;
+
+    ropeHeights.forEach(h=>{
+      const rope = new THREE.Mesh(new THREE.CylinderGeometry(ropeRadius, ropeRadius, len, 6), ropeMat);
+      rope.position.set(midx, h, midz);
+      rope.quaternion.setFromUnitVectors(up, dir);
+      group.add(rope);
+    });
+
+    // poste baixo em cada vértice/canto do limite
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.028,1.0,8), postMat);
+    post.position.set(p.x, 0.5, p.z);
+    group.add(post);
+  });
+
+  scene.add(group);
+  window.__fenceGroup = group;
+  window.BOUNDARY_POLY = poly;
+  window.__boundaryCentroid = polygonCentroid(poly);
+}
+
+// Empurra "pos" (x,z) de volta pra dentro do polígono do limite, mantendo
+// uma margem de segurança. Funciona pra qualquer polígono convexo (o octógono
+// padrão e a grande maioria dos guardians desenhados no Quest2, que costumam
+// ser retangulares/convexos). Chamado todo frame, em qualquer estado do
+// adversário - inclusive durante a queda física, que era o ponto que faltava.
+function clampToBoundary(pos, margin){
+  const poly = window.BOUNDARY_POLY;
+  if(!poly || poly.length<3) return;
+  const centroid = window.__boundaryCentroid || polygonCentroid(poly);
+  let x = pos.x, z = pos.z;
+  for(let iter=0; iter<3; iter++){
+    for(let i=0;i<poly.length;i++){
+      const a = poly[i], b = poly[(i+1)%poly.length];
+      let ex = b.x-a.x, ez = b.z-a.z;
+      const elen = Math.hypot(ex,ez) || 1;
+      ex/=elen; ez/=elen;
+      let nx = -ez, nz = ex; // normal candidata (perpendicular à aresta)
+      // garante que a normal aponta pra dentro (em direção ao centro do polígono)
+      const tcx = centroid.x-a.x, tcz = centroid.z-a.z;
+      if(nx*tcx + nz*tcz < 0){ nx=-nx; nz=-nz; }
+      const dx = x-a.x, dz = z-a.z;
+      const dist = dx*nx + dz*nz; // distância assinada até a aresta
+      if(dist < margin){
+        const push = margin-dist;
+        x += nx*push;
+        z += nz*push;
+      }
+    }
+  }
+  pos.x = x; pos.z = z;
 }
 
 /* -------------------------------- Arena -------------------------------- */
@@ -182,13 +427,12 @@ function buildArena(){
   window.__matTex = matTex;
   window.__matCanvas = matTex.image;
 
-  // Poste + gradil (jaula) nos 8 lados
-  const fenceTex = createFenceTexture();
-  const fenceMat = new THREE.MeshStandardMaterial({map: fenceTex, transparent:true, opacity:0.55, side:THREE.DoubleSide, roughness:0.8});
-  const postMat = new THREE.MeshStandardMaterial({color:0x1a1a1a, roughness:0.6, metalness:0.3});
-  const padMat = new THREE.MeshStandardMaterial({color:0x7a0000, roughness:0.9});
-
-  const sides = 8, wallH = 1.85;
+  // Acolchoado vermelho baixo (apoio estético estilo ringue) + coleta dos vértices
+  // do octógono, que servem de limite PADRÃO (fallback) até detectarmos o
+  // guardian real do Quest2 (veja buildBoundaryFence / clampToBoundary abaixo).
+  const padMat = new THREE.MeshStandardMaterial({color:0xf5f5f2, roughness:0.9, transparent:true, opacity:0.85});
+  const sides = 8;
+  const fallbackPoly = [];
   for(let i=0;i<sides;i++){
     const a0 = (i/sides)*Math.PI*2;
     const a1 = ((i+1)/sides)*Math.PI*2;
@@ -197,24 +441,16 @@ function buildArena(){
     const segLen = Math.hypot(x1-x0, z1-z0);
     const midx = (x0+x1)/2, midz=(z0+z1)/2;
     const ang = Math.atan2(z1-z0, x1-x0);
+    fallbackPoly.push({x:x0, z:z0});
 
-    // painel de tela
-    const panel = new THREE.Mesh(new THREE.PlaneGeometry(segLen, wallH), fenceMat);
-    panel.position.set(midx, wallH/2, midz);
-    panel.rotation.y = -ang;
-    scene.add(panel);
-
-    // poste
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.045,wallH+0.3,8), postMat);
-    post.position.set(x0, (wallH+0.3)/2, z0);
-    scene.add(post);
-
-    // acolchoado vermelho na base
-    const pad = new THREE.Mesh(new THREE.BoxGeometry(segLen,0.4,0.06), padMat);
-    pad.position.set(midx, 0.2, midz);
+    // acolchoado vermelho na base (baixo, não atrapalha a visão)
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(segLen,0.35,0.06), padMat);
+    pad.position.set(midx, 0.175, midz);
     pad.rotation.y = -ang;
     scene.add(pad);
   }
+  // Limite padrão = o próprio octógono, até o guardian real ser detectado (ver setupVRButton)
+  buildBoundaryFence(fallbackPoly);
 
   // arquibancada sugerida (silhueta escura ao fundo)
   const standTex = createStandTexture();
@@ -229,9 +465,9 @@ function buildArena(){
 function createMatTexture(){
   const c = document.createElement('canvas'); c.width=1024; c.height=1024;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#3a0000'; ctx.fillRect(0,0,1024,1024);
+  ctx.fillStyle = '#f0f0ec'; ctx.fillRect(0,0,1024,1024);
   // linhas do octógono
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(60,60,60,0.35)'; ctx.lineWidth = 6;
   ctx.beginPath();
   for(let i=0;i<=8;i++){
     const a = (i/8)*Math.PI*2;
@@ -240,7 +476,7 @@ function createMatTexture(){
   }
   ctx.closePath(); ctx.stroke();
   ctx.beginPath(); ctx.arc(512,512,260,0,Math.PI*2); ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillStyle = 'rgba(40,40,40,0.28)';
   ctx.font = 'bold 90px Arial';
   ctx.textAlign = 'center'; ctx.textBaseline='middle';
   ctx.fillText('M M A', 512, 512);
@@ -265,9 +501,9 @@ function createStandTexture(){
   const c = document.createElement('canvas'); c.width=1024;c.height=512;
   const ctx = c.getContext('2d');
   const grad = ctx.createLinearGradient(0,0,0,512);
-  grad.addColorStop(0,'#000'); grad.addColorStop(0.5,'#1a0505'); grad.addColorStop(1,'#000');
+  grad.addColorStop(0,'#ececeb'); grad.addColorStop(0.5,'#d8d8d5'); grad.addColorStop(1,'#ececeb');
   ctx.fillStyle = grad; ctx.fillRect(0,0,1024,512);
-  ctx.fillStyle = 'rgba(255,220,150,0.5)';
+  ctx.fillStyle = 'rgba(120,120,130,0.35)';
   for(let i=0;i<400;i++){
     ctx.beginPath();
     ctx.arc(Math.random()*1024, 150+Math.random()*250, Math.random()*1.6, 0, Math.PI*2);
@@ -371,10 +607,15 @@ function buildControllers(){
   const gloveGeo = new THREE.SphereGeometry(0.055, 10,10);
   for(let i=0;i<2;i++){
     const ctrl = renderer.xr.getController(i);
-    const glove = new THREE.Mesh(gloveGeo, new THREE.MeshStandardMaterial({color:0x8a0000, roughness:0.5}));
+    const mat = new THREE.MeshStandardMaterial({color:0x8a0000, roughness:0.5});
+    const glove = new THREE.Mesh(gloveGeo, mat);
     ctrl.add(glove);
     scene.add(ctrl);
     controllerGroups.push(ctrl);
+    gloveMats.push(mat);
+    // GATILHO (trigger/"select" no WebXR): aperta = tenta agarrar; solta = larga
+    ctrl.addEventListener('selectstart', ()=>tryGrab(i));
+    ctrl.addEventListener('selectend', ()=>releaseGrab(i));
   }
   controller0 = controllerGroups[0];
   controller1 = controllerGroups[1];
@@ -384,8 +625,9 @@ function buildControllers(){
 const opp = {
   root:null, hip:null, torsoPivot:null, torsoMesh:null, neck:null, head:null,
   lArmPivot:null, rArmPivot:null,
-  health:100, maxHealth:100,
-  state:'standing', // standing | staggered | falling | down | gettingUp | ko | finished
+  health:1000, maxHealth:1000,
+  lastHitTime:-999,
+  state:'standing', // standing | staggered | falling_physics | down | gettingUp | ko | finished
   stateTimer:0,
   fallFrom:{pos:new THREE.Vector3(), quat:new THREE.Quaternion()},
   fallTo:{pos:new THREE.Vector3(), quat:new THREE.Quaternion()},
@@ -397,6 +639,18 @@ const opp = {
   chokeProgress:0,
   bloodPool:null,
   facingBase: new THREE.Quaternion(),
+
+  // --- física real de equilíbrio / queda / levantar ---
+  stability: 1.0,                 // 1 = firme em pé, 0 = perde o equilíbrio e cai
+  fallVel: new THREE.Vector3(),   // velocidade do corpo durante a queda física
+  fallAxis: new THREE.Vector3(1,0,0),
+  fallAngle: 0,
+  fallAngularSpeed: 0,
+  fallBaseQuat: new THREE.Quaternion(),
+  fallEndState: 'down',
+  getUpProgress: 0,               // 0->1: ele foi empurrando o corpo pra levantar
+  getUpFrom: new THREE.Quaternion(),
+  getUpElapsed: 0,
 };
 
 function buildOpponent(){
@@ -420,11 +674,17 @@ function buildOpponent(){
   shorts.position.set(0,0.0,0);
   opp.hip.add(shorts);
 
-  // pernas simples
-  [-0.11,0.11].forEach(x=>{
+  // pernas simples + marcador de tornozelo (ponto real de agarre pra puxar e derrubar)
+  opp.legAnkles = {};
+  [1,-1].forEach(sign=>{
+    const x = 0.11*sign;
     const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.06,0.85,8), skinMat);
     leg.position.set(x,-0.42,0);
     opp.hip.add(leg);
+    const ankle = new THREE.Object3D();
+    ankle.position.set(x, -0.42-0.43, 0.02);
+    opp.hip.add(ankle);
+    opp.legAnkles[sign===1?'L':'R'] = ankle;
   });
 
   opp.torsoPivot = new THREE.Group();
@@ -439,9 +699,10 @@ function buildOpponent(){
   opp.neck.position.set(0,0.56,0);
   opp.torsoPivot.add(opp.neck);
 
-  opp.head = new THREE.Mesh(new THREE.SphereGeometry(0.135,14,14), skinMat);
+  opp.head = new THREE.Mesh(new THREE.SphereGeometry(0.135,16,16), skinMat);
   opp.head.position.set(0,0.14,0);
   opp.neck.add(opp.head);
+  buildFace(opp.head);
 
   // braços (ombro -> antebraço -> luva)
   function buildArm(sign){
@@ -462,6 +723,7 @@ function buildOpponent(){
     glove.position.set(0,-0.27,0.04);
     elbow.add(glove);
     shoulder.rotation.x = -0.15*sign*0 + (-0.1);
+    shoulder.userData.wrist = glove; // ponto de agarre do braço/pulso
     return shoulder;
   }
   opp.lArmPivot = buildArm(1);
@@ -469,11 +731,55 @@ function buildOpponent(){
 
   opp.facingBase.copy(opp.root.quaternion);
 }
+function buildFace(headMesh){
+  const skinColor = 0xc9906a;
+  const darkMat = new THREE.MeshStandardMaterial({color:0x2a1810, roughness:0.6});
+  const mouthMat = new THREE.MeshStandardMaterial({color:0x7a3030, roughness:0.7});
+  const eyeWhiteMat = new THREE.MeshStandardMaterial({color:0xf0ece0, roughness:0.4});
+  const noseMat = new THREE.MeshStandardMaterial({color:skinColor, roughness:0.65});
+
+  const R = 0.135; // raio da cabeça
+  const frontZ = R*0.86; // "frente" do rosto (mesmo lado que as luvas apontam, +z)
+
+  // olhos (branco + íris)
+  [-1,1].forEach(sign=>{
+    const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.017,8,8), eyeWhiteMat);
+    eyeWhite.position.set(0.045*sign, 0.015, frontZ*0.98);
+    headMesh.add(eyeWhite);
+    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.009,8,8), darkMat);
+    iris.position.set(0.045*sign, 0.015, frontZ*1.06);
+    headMesh.add(iris);
+    // sobrancelha
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.012,0.012), darkMat);
+    brow.position.set(0.045*sign, 0.045, frontZ*0.95);
+    brow.rotation.z = -0.15*sign;
+    headMesh.add(brow);
+  });
+
+  // nariz
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.02,0.045,6), noseMat);
+  nose.position.set(0,-0.01,frontZ*1.08);
+  nose.rotation.x = Math.PI/2.1;
+  headMesh.add(nose);
+
+  // boca
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.014,0.012), mouthMat);
+  mouth.position.set(0,-0.055,frontZ*0.99);
+  headMesh.add(mouth);
+
+  // mandíbula/queixo (leve volume)
+  const jaw = new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8), new THREE.MeshStandardMaterial({color:skinColor, roughness:0.65}));
+  jaw.position.set(0,-0.075,frontZ*0.55);
+  jaw.scale.set(1,0.7,0.8);
+  headMesh.add(jaw);
+}
+
 buildOpponent();
 
 /* estado auxiliar de reação (cabeça/torso) */
-let headKick = 0, headKickVel = 0;
-let torsoLean = 0, torsoLeanVel = 0;
+let pitchKick = 0, pitchKickVel = 0;   // cabeça pra cima/baixo
+let yawKick = 0, yawKickVel = 0;       // cabeça pro lado (direção do soco)
+let torsoLean = 0, torsoLeanVel = 0;   // tronco se encurvando
 
 function neckWorldPos(){ return opp.neck.getWorldPosition(new THREE.Vector3()); }
 function headWorldPos(){ return opp.head.getWorldPosition(new THREE.Vector3()); }
@@ -492,17 +798,36 @@ function closestPointOnSegment(p, a, b){
 }
 
 /* ------------------------------ Dano / reações ------------------------------ */
+const REGEN_RATE = 6;     // pontos de vida por segundo - bem baixo perto dos ~1000 de vida total
+const REGEN_DELAY = 4;    // segundos sem apanhar antes de começar a regenerar
+
 function applyDamage(amount, isHead){
   opp.health = Math.max(0, opp.health - amount);
-  const dmgRatio = 1 - (opp.health/opp.maxHealth);
-  opp.skinMat.color.lerpColors(new THREE.Color(0xc9906a), new THREE.Color(0x5a0f0f), Math.min(1,dmgRatio*0.85));
+  opp.lastHitTime = performance.now()/1000;
+  // sem mudança de cor de pele por dano - o dano só aparece como sangue de verdade
   if(opp.health<=0 && opp.state!=='ko' && opp.state!=='finished'){
     koOpponent();
   }
 }
+function updateRegen(dt){
+  if(opp.state==='ko' || opp.state==='finished') return;
+  const now = performance.now()/1000;
+  if(now - opp.lastHitTime > REGEN_DELAY && opp.health < opp.maxHealth){
+    opp.health = Math.min(opp.maxHealth, opp.health + REGEN_RATE*dt);
+  }
+}
+// converte uma direção do mundo para o espaço local de um objeto (pra saber de que lado veio o soco)
+function worldDirToLocal(obj, dirWorld){
+  const q = new THREE.Quaternion();
+  obj.getWorldQuaternion(q);
+  q.invert();
+  return dirWorld.clone().applyQuaternion(q);
+}
 function koOpponent(){
-  opp.state = 'ko';
-  startFall(new THREE.Vector3(0,0,1));
+  // desmaia e desaba: colapso físico (não uma animação fixa), com um leve
+  // impulso aleatório simulando as pernas cedendo
+  const fakeVel = new THREE.Vector3((Math.random()-0.5)*0.6, 0.35, 0.25+Math.random()*0.35);
+  startPhysicsFall(fakeVel, 'ko');
   setStatus('NOCAUTE!');
 }
 function finishSubmission(){
@@ -512,11 +837,16 @@ function finishSubmission(){
 
 function registerHeadHit(speed, controllerVel, hitPoint){
   const power = THREE.MathUtils.clamp(speed*9, 6, 42);
+  const dmgRatio = 1 - (opp.health/opp.maxHealth);
   applyDamage(power, true);
-  headKickVel += THREE.MathUtils.clamp(speed*0.35, 0.2, 1.4);
+  // a cabeça recua na direção em que a mão estava se movendo (soco de baixo, de lado, reto)
+  const localDir = worldDirToLocal(opp.torsoPivot, controllerVel.clone().normalize());
+  const kick = THREE.MathUtils.clamp(speed*0.35, 0.2, 1.5);
+  pitchKickVel += kick * (0.5 + Math.abs(localDir.y));   // soco de baixo pra cima / cima pra baixo
+  yawKickVel   += -localDir.x * kick * 1.3;               // soco vindo de um lado (gancho)
   torsoLeanVel += 0.4;
   const local = opp.head.worldToLocal(hitPoint.clone());
-  spawnBloodDecal(opp.head, local, 0.05+Math.random()*0.05);
+  spawnBloodDecal(opp.head, local, (0.05+Math.random()*0.05) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
   pulseHaptics();
@@ -527,10 +857,14 @@ function registerHeadHit(speed, controllerVel, hitPoint){
 }
 function registerBodyHit(speed, controllerVel, hitPoint){
   const power = THREE.MathUtils.clamp(speed*5.5, 4, 24);
+  const dmgRatio = 1 - (opp.health/opp.maxHealth);
   applyDamage(power, false);
-  torsoLeanVel += 0.25;
-  const local = opp.torsoMesh.worldToLocal(hitPoint.clone());
-  spawnBloodDecal(opp.torsoMesh, local, 0.05+Math.random()*0.06);
+  // parte de baixo do tronco = soco na barriga -> ele se encurva bem mais
+  const localHit = opp.torsoMesh.worldToLocal(hitPoint.clone());
+  const isBelly = localHit.y < 0;
+  torsoLeanVel += isBelly ? 1.1 : 0.25;
+  const local = localHit;
+  spawnBloodDecal(opp.torsoMesh, local, (0.05+Math.random()*0.06) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
   pulseHaptics();
@@ -548,44 +882,109 @@ function registerGroundPound(speed, controllerVel, hitPoint){
   playThud(true);
 }
 
-/* ------------------------------ Queda / levantar ------------------------------ */
-function startFall(pushDirWorldXZ){
-  opp.state = (opp.state==='ko') ? 'ko' : 'falling';
-  opp.fallElapsed = 0;
-  opp.fallFrom.pos.copy(opp.root.position);
-  opp.fallFrom.quat.copy(opp.root.quaternion);
+/* ------------------------------ Queda física real (sem animação fixa) ------------------------------ */
+// A queda é um pequeno integrador de física: velocidade + rotação em torno de um eixo
+// horizontal, calculados a partir da velocidade REAL da sua mão no momento em que ele
+// perde o equilíbrio. Isso substitui qualquer animação "pronta" de 0 a 100.
+function startPhysicsFall(impulseVel, endState){
+  opp.state = 'falling_physics';
+  opp.fallEndState = endState; // 'down' (derrubado) ou 'ko' (nocauteado)
+  opp.fallBaseQuat.copy(opp.root.quaternion);
+  opp.fallAngle = 0;
 
-  const backAxis = new THREE.Vector3(pushDirWorldXZ.z, 0, -pushDirWorldXZ.x).normalize();
-  const fallQuat = new THREE.Quaternion().setFromAxisAngle(backAxis, Math.PI/2*(Math.random()<0.5?1:-1));
-  opp.fallTo.quat.copy(opp.root.quaternion).premultiply(new THREE.Quaternion()); // baseline
-  opp.fallTo.quat = opp.root.quaternion.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI/2));
+  const dir = new THREE.Vector3(impulseVel.x, 0, impulseVel.z);
+  if(dir.lengthSq() < 0.0001) dir.set(0,0,1);
+  dir.normalize();
 
-  const back = pushDirWorldXZ.clone().normalize().multiplyScalar(-0.35);
-  opp.fallTo.pos = opp.root.position.clone().add(back);
-  opp.fallTo.pos.y = 0.02;
+  // eixo horizontal perpendicular à direção do puxão/impulso: ele tomba "para trás"
+  // na direção oposta/lateral de onde foi puxado, como um corpo real perderia o pé
+  opp.fallAxis.set(dir.z, 0, -dir.x).normalize();
+  opp.fallAngularSpeed = THREE.MathUtils.clamp(impulseVel.length()*2.2, 2.0, 7.0);
 
-  opp.getUpTimer = 5.5;
-  if(!opp.bloodPool){
-    opp.bloodPool = spawnFloorBloodPool(opp.root.position);
+  opp.fallVel.copy(dir).multiplyScalar(THREE.MathUtils.clamp(impulseVel.length()*0.5, 0.3, 2.2));
+  opp.fallVel.y = Math.max(0.15, impulseVel.y*0.5);
+
+  // ele caiu: solta qualquer agarre (a mão perde o ponto quando ele desaba)
+  releaseGrab(0); releaseGrab(1);
+  pulseHaptics();
+
+  if(!opp.bloodPool && endState!=='ko'){
+    // pool de sangue só nasce de fato quando ele já apanhou; se cair só por
+    // desequilíbrio ainda sem sangue, não força poça - mantém realismo
   }
 }
-function startGetUp(){
-  opp.state = 'gettingUp';
-  opp.fallElapsed = 0;
-  opp.fallFrom.pos.copy(opp.root.position);
-  opp.fallFrom.quat.copy(opp.root.quaternion);
-  opp.fallTo.pos.set(opp.root.position.x, 0, opp.root.position.z);
-  opp.fallTo.quat.copy(opp.facingBase);
+
+/* ------------------------------ Agarrão (grab) no gatilho ------------------------------ */
+function getGrabCandidates(){
+  const list = [];
+  if(opp.legAnkles){
+    if(opp.legAnkles.L) list.push({id:'legL', part:'leg', obj:opp.legAnkles.L});
+    if(opp.legAnkles.R) list.push({id:'legR', part:'leg', obj:opp.legAnkles.R});
+  }
+  if(opp.lArmPivot && opp.lArmPivot.userData.wrist) list.push({id:'armL', part:'arm', obj:opp.lArmPivot.userData.wrist});
+  if(opp.rArmPivot && opp.rArmPivot.userData.wrist) list.push({id:'armR', part:'arm', obj:opp.rArmPivot.userData.wrist});
+  if(opp.torsoMesh) list.push({id:'torso', part:'torso', obj:opp.torsoMesh});
+  return list;
 }
 
-function attemptTakedown(playerXZDir){
-  const resistChance = 0.40 - (1-opp.health/opp.maxHealth)*0.28; // mais fraco = resiste menos
-  if(Math.random() < resistChance){
-    opp.state='staggered'; opp.stateTimer=0.35;
-    setStatus('Ele resistiu à queda!');
-  } else {
-    startFall(playerXZDir);
-    setStatus('DERRUBADO! Finalize ou continue batendo');
+function tryGrab(ci){
+  if(!xrSessionActive) return;
+  if(opp.state==='ko' || opp.state==='finished') return;
+  const ctrl = ci===0 ? controller0 : controller1;
+  if(!ctrl) return;
+  const pos = ctrl.getWorldPosition(new THREE.Vector3());
+  let best = null, bestDist = GRAB_RADIUS;
+  getGrabCandidates().forEach(c=>{
+    const p = c.obj.getWorldPosition(new THREE.Vector3());
+    const d = pos.distanceTo(p);
+    if(d < bestDist){ bestDist = d; best = c; }
+  });
+  if(best){
+    grabState[ci] = {active:true, id:best.id, part:best.part, obj:best.obj};
+    if(gloveMats[ci]) gloveMats[ci].color.setHex(0x2a8f3a); // verde = agarrado
+    pulseHaptics();
+  }
+}
+function releaseGrab(ci){
+  grabState[ci] = {active:false, id:null, part:null, obj:null};
+  if(gloveMats[ci]) gloveMats[ci].color.setHex(0x8a0000);
+}
+
+// Processa os agarrões ativos todo frame: em pé, puxar a perna/tronco/braço
+// desgasta o equilíbrio real dele; no chão, você arrasta o corpo dele de verdade.
+function handleGrabs(dt){
+  for(let ci=0; ci<2; ci++){
+    const g = grabState[ci];
+    if(!g.active) continue;
+    if(opp.state==='ko' || opp.state==='finished'){ releaseGrab(ci); continue; }
+
+    const vel = ctrlVel[ci];
+    const horiz = new THREE.Vector3(vel.x, 0, vel.z);
+
+    if(opp.state==='standing' || opp.state==='staggered'){
+      const factor = g.part==='leg' ? LEG_PULL_FACTOR : (g.part==='torso' ? TORSO_PULL_FACTOR : ARM_PULL_FACTOR);
+      opp.stability -= horiz.length()*factor*dt*0.6;
+
+      // puxão real também desloca o corpo dele (clinch), dá sensação de peso
+      opp.root.position.addScaledVector(horiz, dt*CLINCH_DRAG_FACTOR);
+      clampToBoundary(opp.root.position, 0.35);
+
+      if(opp.stability <= 0){
+        startPhysicsFall(vel.clone(), 'down');
+        setStatus('Ele perdeu o equilíbrio e caiu!');
+      }
+    } else if(opp.state==='down' || opp.state==='gettingUp'){
+      // arraste real: mova sua mão pra qualquer lado e ele vai junto (com peso)
+      opp.root.position.addScaledVector(horiz, dt*GROUND_DRAG_FACTOR);
+      clampToBoundary(opp.root.position, 0.3);
+
+      if(opp.state==='gettingUp'){
+        // segurar ele enquanto tenta levantar o derruba de volta
+        opp.state = 'down';
+        opp.getUpProgress = Math.max(0, opp.getUpProgress - 0.35);
+        setStatus('Você o derrubou de volta!');
+      }
+    }
   }
 }
 
@@ -624,17 +1023,17 @@ function updateOpponentAI(dt, camXZ){
 
     opp.root.position.addScaledVector(moveDir, dt*moveSpeed);
 
-    // mantém o adversário dentro da jaula
-    const R0 = window.ARENA_R || 3.2;
-    const maxR = R0-0.35;
-    if(opp.root.position.length() > maxR){
-      opp.root.position.setLength(maxR);
-    }
+    // mantém o adversário dentro do limite real da sua sala (guardian)
+    clampToBoundary(opp.root.position, 0.35);
 
     const t = performance.now()*0.002;
     opp.torsoPivot.position.y = 0.1 + Math.sin(t)*0.01;
     opp.lArmPivot.rotation.x = -0.1 + Math.sin(t*1.3)*0.05;
     opp.rArmPivot.rotation.x = -0.1 + Math.sin(t*1.3+Math.PI)*0.05;
+
+    // recupera o equilíbrio sozinho, a não ser que você esteja puxando a perna dele agora
+    const legBeingPulled = (grabState[0].active && grabState[0].part==='leg') || (grabState[1].active && grabState[1].part==='leg');
+    if(!legBeingPulled) opp.stability = Math.min(STABILITY_MAX, opp.stability + dt*STABILITY_RECOVER_RATE);
 
     opp.attackTimer -= dt;
     if(opp.attackTimer<=0 && !opp.attacking){
@@ -659,23 +1058,58 @@ function updateOpponentAI(dt, camXZ){
   } else if(opp.state==='staggered'){
     opp.stateTimer -= dt;
     if(opp.stateTimer<=0) opp.state='standing';
-  } else if(opp.state==='falling' || opp.state==='gettingUp'){
-    opp.fallElapsed += dt;
-    const t = Math.min(1, opp.fallElapsed/opp.fallDuration);
-    const et = 1-Math.pow(1-t,3);
-    opp.root.position.lerpVectors(opp.fallFrom.pos, opp.fallTo.pos, et);
-    opp.root.quaternion.slerpQuaternions(opp.fallFrom.quat, opp.fallTo.quat, et);
-    if(t>=1){
-      if(opp.state==='falling') opp.state = (opp.health<=0)?'ko':'down';
-      else opp.state = 'standing';
+  } else if(opp.state==='falling_physics'){
+    // integrador físico real: velocidade + rotação em torno de um eixo horizontal,
+    // desacelerando por atrito/gravidade - nada de animação com tempo fixo.
+    opp.fallAngle += opp.fallAngularSpeed*dt;
+    const angleClamped = Math.min(opp.fallAngle, Math.PI/2);
+    const q = new THREE.Quaternion().setFromAxisAngle(opp.fallAxis, angleClamped);
+    opp.root.quaternion.copy(q).multiply(opp.fallBaseQuat);
+
+    opp.fallVel.y -= FALL_GRAVITY*dt;
+    opp.root.position.addScaledVector(opp.fallVel, dt);
+    opp.fallVel.multiplyScalar(0.94); // atrito indo pro chão
+    clampToBoundary(opp.root.position, 0.2); // isso é o que faltava: aqui ele escapava do limite
+    if(opp.root.position.y < 0){ opp.root.position.y = 0; opp.fallVel.y = 0; }
+
+    if(angleClamped >= Math.PI/2 - 0.001){
+      opp.root.position.y = 0.02;
+      opp.fallVel.set(0,0,0);
+      if(opp.fallEndState==='ko'){
+        opp.state = 'ko';
+      } else {
+        opp.state = 'down';
+        opp.getUpProgress = 0;
+        if(!opp.bloodPool) opp.bloodPool = spawnFloorBloodPool(opp.root.position);
+      }
     }
   } else if(opp.state==='down'){
-    opp.getUpTimer -= dt;
-    // luta debilitada tentando se levantar
+    // ele pesa e está sempre tentando se levantar ou virar de novo pra cima -
+    // segure-o (agarrado) pra atrasar isso de verdade, é um cabo de guerra contínuo
+    const beingHeld = grabState[0].active || grabState[1].active;
+    const rate = beingHeld ? GETUP_RATE_PINNED : GETUP_RATE;
+    opp.getUpProgress = Math.min(1, opp.getUpProgress + dt*rate);
     const wig = Math.sin(performance.now()*0.01)*0.05;
     opp.lArmPivot.rotation.z = wig;
-    if(opp.getUpTimer<=0){
-      startGetUp();
+    if(opp.getUpProgress >= 1){
+      opp.state = 'gettingUp';
+      opp.getUpElapsed = 0;
+      opp.getUpFrom.copy(opp.root.quaternion);
+      setStatus('Ele está levantando!');
+    }
+  } else if(opp.state==='gettingUp'){
+    // levantar também é contínuo e pode ser interrompido a qualquer momento
+    // se você agarrar ele de novo (handleGrabs devolve pro estado 'down')
+    opp.getUpElapsed += dt;
+    const t = Math.min(1, opp.getUpElapsed/0.9);
+    opp.root.quaternion.slerpQuaternions(opp.getUpFrom, opp.facingBase, t);
+    opp.root.position.y = THREE.MathUtils.lerp(opp.root.position.y, 0, t);
+    if(t>=1){
+      opp.state = 'standing';
+      opp.stability = STABILITY_MAX;
+      opp.getUpProgress = 0;
+      opp.root.position.y = 0;
+      setStatus('Ele levantou!');
     }
   }
   // pool de sangue cresce enquanto ele fica caído/atordoado
@@ -688,13 +1122,18 @@ function updateOpponentAI(dt, camXZ){
   }
 
   // reações de cabeça/torso (mola amortecida)
-  headKickVel += -headKick*22*dt - headKickVel*6*dt;
-  headKick += headKickVel*dt;
-  opp.neck.rotation.x = -headKick;
+  pitchKickVel += -pitchKick*22*dt - pitchKickVel*6*dt;
+  pitchKick += pitchKickVel*dt;
+  yawKickVel += -yawKick*18*dt - yawKickVel*6*dt;
+  yawKick += yawKickVel*dt;
+  opp.neck.rotation.x = -pitchKick;
+  opp.neck.rotation.y = THREE.MathUtils.clamp(yawKick, -1.1, 1.1);
 
-  torsoLeanVel += -torsoLean*14*dt - torsoLeanVel*5*dt;
+  torsoLeanVel += -torsoLean*10*dt - torsoLeanVel*5*dt;
   torsoLean += torsoLeanVel*dt;
-  opp.torsoPivot.rotation.x = -torsoLean*0.5;
+  opp.torsoPivot.rotation.x = -torsoLean*0.55; // se encurva pra frente quando toma na barriga
+
+  updateRegen(dt);
 }
 
 function flashDazed(){
@@ -767,14 +1206,15 @@ function render(){
 
     handleController(0, controller0, dt);
     handleController(1, controller1, dt);
+    handleGrabs(dt);
     handleChoke(dt);
-    handleTakedown(dt, camWorld);
     handleBellTouch();
 
     updateOpponentAI(dt, camWorld);
   }
 
   updateParticles(dt);
+  stepPhysics(dt);
 
   if(dazedFlash>0){
     dazedFlash = Math.max(0, dazedFlash-dt*1.4);
@@ -793,6 +1233,8 @@ function handleController(ci, ctrl, dt){
   const speed = vel.length();
   prevCtrlPos[ci].copy(pos);
   ctrlVel[ci].copy(vel);
+
+  if(grabState[ci] && grabState[ci].active) return; // mão ocupada agarrando, não conta soco
 
   lastPunchTime[ci] += dt;
   if(lastPunchTime[ci] < PUNCH_COOLDOWN) return;
@@ -817,21 +1259,6 @@ function handleController(ci, ctrl, dt){
       registerGroundPound(speed, vel, pos);
       lastPunchTime[ci]=0;
     }
-  }
-}
-
-function handleTakedown(dt, camWorld){
-  const now = performance.now()/1000;
-  if(opp.state!=='standing') return;
-  if(now-lastTakedownAttempt < TAKEDOWN_COOLDOWN) return;
-  const toOpp = new THREE.Vector3(opp.root.position.x-camWorld.x,0,opp.root.position.z-camWorld.z);
-  const dist = toOpp.length();
-  if(dist > TAKEDOWN_RANGE) return;
-  const dir = toOpp.clone().normalize();
-  const forwardSpeed = new THREE.Vector3(camVel.x,0,camVel.z).dot(dir);
-  if(forwardSpeed > 1.0){
-    lastTakedownAttempt = now;
-    attemptTakedown(dir);
   }
 }
 
@@ -875,10 +1302,16 @@ function resetMatch(){
   opp.stateTimer = 0;
   opp.chokeProgress = 0;
   opp.getUpTimer = 0;
-  opp.root.position.set(0,0,-1.35);
+  opp.lastHitTime = -999;
+  opp.stability = STABILITY_MAX;
+  opp.getUpProgress = 0;
+  opp.fallVel.set(0,0,0);
+  opp.fallAngle = 0;
+  releaseGrab(0); releaseGrab(1);
+  const R0 = window.ARENA_R || 3.2;
+  opp.root.position.set(0,0,-(R0*0.55));
   opp.root.quaternion.copy(opp.facingBase);
-  opp.skinMat.color.set(0xc9906a);
-  headKick=0; headKickVel=0; torsoLean=0; torsoLeanVel=0;
+  pitchKick=0; pitchKickVel=0; yawKick=0; yawKickVel=0; torsoLean=0; torsoLeanVel=0;
   [opp.head, opp.torsoMesh].forEach(m=>{
     if(m.userData.decals){
       m.userData.decals.forEach(d=>m.remove(d));
