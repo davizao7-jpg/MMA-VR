@@ -80,6 +80,19 @@ const GETUP_RATE = 0.19;           // progresso de "levantar" por segundo, sem n
 const GETUP_RATE_PINNED = 0.02;    // progresso de "levantar" por segundo, se você tiver ele agarrado
 const FALL_GRAVITY = 9.8;
 
+// PASSO 4: arraste no chão vira força real sobre o corpo físico agarrado
+// (perna ou tronco), em vez de mover `opp.root.position` direto. É um valor
+// de força (aplicada como impulso*dt a cada frame), não mais um fator de
+// deslocamento — por isso é uma constante separada do GROUND_DRAG_FACTOR
+// antigo. Provisório: ajustar depois de testar no Quest2 (corpos mais
+// pesados, como o quadril, vão reagir menos - ver `massByPart` em
+// `releaseOpponentRagdoll`).
+const GROUND_DRAG_FORCE = 55;
+
+// Perna, tronco e (desde o passo 5) braço têm corpo físico próprio no
+// ragdoll - por isso o mapa cobre os 5 pontos de agarre possíveis.
+const GRAB_ID_TO_RAGDOLL_KEY = {legL:'legL', legR:'legR', torso:'torso', armL:'armL', armR:'armR'};
+
 let gloveMats = [];
 let grabState = [
   {active:false, id:null, part:null, obj:null},
@@ -101,10 +114,18 @@ let bell;
 let physicsWorld = null;   // btDiscreteDynamicsWorld
 let physicsReady = false;  // true quando o Ammo terminou de carregar
 let tmpTrans = null;       // btTransform reutilizável (evita criar objeto toda hora)
+let tmpKinTrans = null;    // btTransform reutilizável pra escrever pose cinemática do ragdoll
+let tmpImpulseVec = null;  // btVector3 reutilizável pro impulso de soco
+let tmpRelVec = null;      // btVector3 reutilizável pro ponto de aplicação (offset do centro de massa)
+const tmpVec3 = new THREE.Vector3();       // reutilizável pra ler posição mundial dos meshes do opp
+const tmpQuat = new THREE.Quaternion();    // reutilizável pra ler rotação mundial dos meshes do opp
+const tmpImpulsePivot = new THREE.Vector3(); // reutilizável pra centro de massa na hora do impulso
+const tmpVec3B = new THREE.Vector3();        // reutilizável (posição do quadril na hora de assentar a queda)
 const rigidBodies = [];    // { mesh: THREE.Mesh, body: btRigidBody } - tudo que precisa
                             // sincronizar posição/rotação do Ammo pro Three.js a cada frame
 let testBallMesh = null;
 let testBallBody = null;
+let boundaryColliderBodies = []; // paredes físicas estáticas do limite (guardian) - passo 6
 
 init();
 
@@ -187,9 +208,14 @@ function initPhysics(){
   physicsWorld.setGravity(new Ammo.btVector3(0, -9.8, 0));
 
   tmpTrans = new Ammo.btTransform();
+  tmpKinTrans = new Ammo.btTransform(); // reutilizável pra escrever a pose cinemática do ragdoll
+  tmpImpulseVec = new Ammo.btVector3(0,0,0);
+  tmpRelVec = new Ammo.btVector3(0,0,0);
 
   buildPhysicsFloor();
+  buildBoundaryColliders(window.BOUNDARY_POLY); // paredes do limite padrão (octógono) - passo 6
   buildTestBall();
+  maybeBuildOpponentRagdoll(); // só builda se `opp` já existir (ver comentário na função)
 }
 
 // Chão físico estático (massa 0) do tamanho do octógono, na mesma altura do tapete visual.
@@ -209,6 +235,68 @@ function buildPhysicsFloor(){
   body.setFriction(0.9);
   body.setRestitution(0.2);
   physicsWorld.addRigidBody(body);
+}
+
+// PASSO 6: fronteira (guardian) virando colisores físicos de verdade. Até
+// aqui, `clampToBoundary` só empurrava manualmente `opp.root.position` - o
+// que nunca fazia efeito nenhum no ragdoll depois dele solto de verdade
+// (hip/tronco/cabeça/pernas/braços saem da hierarquia de `opp.root` em
+// `releaseOpponentRagdoll`, via `scene.attach`). Ou seja: um ragdoll caído
+// e arrastado até a borda simplesmente atravessava o limite. Essas paredes
+// (estáticas, invisíveis, só colisão) resolvem isso de verdade pro ragdoll,
+// sem mexer no `clampToBoundary` (que continua útil pro `opp.root` andando
+// de pé/IA e outras coisas que não são o ragdoll físico).
+const BOUNDARY_WALL_HEIGHT = 2.0;
+const BOUNDARY_WALL_THICKNESS = 0.12;
+
+function disposeBoundaryColliders(){
+  if(!physicsWorld) { boundaryColliderBodies = []; return; }
+  boundaryColliderBodies.forEach(body=>{
+    try{ physicsWorld.removeRigidBody(body); }catch(err){ /* ignora - mundo já pode ter sumido */ }
+  });
+  boundaryColliderBodies = [];
+}
+
+// Monta uma parede estática por aresta do polígono do limite (fallback
+// octogonal ou o guardian real do Quest2 - qualquer polígono convexo ou não,
+// já que cada aresta vira sua própria parede reta e independente).
+function buildBoundaryColliders(poly){
+  if(!physicsReady || !physicsWorld) return; // física ainda não carregou - tenta de novo quando ela ficar pronta
+  if(!poly || poly.length<3) return;
+
+  try{
+    disposeBoundaryColliders(); // tira as paredes antigas (se o guardian real substituiu o octógono padrão)
+
+    poly.forEach((p, i)=>{
+      const q = poly[(i+1)%poly.length];
+      const dx = q.x-p.x, dz = q.z-p.z;
+      const len = Math.hypot(dx,dz);
+      if(len < 0.05) return; // aresta degenerada, ignora
+
+      const shape = new Ammo.btBoxShape(new Ammo.btVector3(len/2, BOUNDARY_WALL_HEIGHT/2, BOUNDARY_WALL_THICKNESS/2));
+      const transform = new Ammo.btTransform();
+      transform.setIdentity();
+      const midx = (p.x+q.x)/2, midz = (p.z+q.z)/2;
+      transform.setOrigin(new Ammo.btVector3(midx, BOUNDARY_WALL_HEIGHT/2, midz));
+
+      // gira a parede (eixo X local dela) pra alinhar com a direção da aresta no plano XZ
+      const angle = Math.atan2(dz, dx);
+      const q3 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), angle);
+      transform.setRotation(new Ammo.btQuaternion(q3.x, q3.y, q3.z, q3.w));
+
+      const motionState = new Ammo.btDefaultMotionState(transform);
+      const localInertia = new Ammo.btVector3(0,0,0); // massa 0 = estático
+      const rbInfo = new Ammo.btRigidBodyConstructionInfo(0, motionState, shape, localInertia);
+      const body = new Ammo.btRigidBody(rbInfo);
+      body.setFriction(0.7);
+      physicsWorld.addRigidBody(body);
+      boundaryColliderBodies.push(body);
+    });
+
+    console.log('[física] paredes do limite (guardian) criadas:', boundaryColliderBodies.length);
+  } catch(err){
+    console.warn('[física] falha ao criar as paredes do limite, ragdoll fica sem contenção física real:', err);
+  }
 }
 
 // Bolinha de teste: cai do alto e quica no chão físico.
@@ -240,9 +328,347 @@ function buildTestBall(){
   rigidBodies.push({mesh: testBallMesh, body: testBallBody});
 }
 
+/* ---------------------------------------------------------------------
+   RAGDOLL DO ADVERSÁRIO - passo 1 (consolidado): um único boneco físico,
+   já acoplado no `opp` de verdade (quadril, tronco, cabeça, duas pernas,
+   ligados por juntas cone-twist). Por enquanto ele fica em modo
+   CINEMÁTICO: os corpos físicos apenas SEGUEM a pose dos meshes visuais
+   (que continuam 100% controlados pelo sistema manual de sempre -
+   `updateOpponentAI`, `stability`, `fallVel` etc.). Nada muda no que já
+   funciona hoje. As juntas já ficam montadas e prontas: no passo da
+   queda (`startPhysicsFall`), a gente troca os corpos de cinemático pra
+   dinâmico (`releaseOpponentRagdoll()`) e aí sim a física assume de
+   verdade, soltando o ragdoll.
+   --------------------------------------------------------------------- */
+
+// Cria só o corpo físico (sem mesh - o visual já existe, é o mesh do `opp`).
+// `kinematic=true`: corpo com massa 0 e flag CF_KINEMATIC_OBJECT, ou seja,
+// não reage a força nenhuma - a gente é quem escreve a posição/rotação dele
+// todo frame (a partir do mesh visual), e o motor só o usa pra colisão/juntas.
+function buildRagdollBody(shape, x, y, z, kinematic){
+  const transform = new Ammo.btTransform();
+  transform.setIdentity();
+  transform.setOrigin(new Ammo.btVector3(x, y, z));
+  const motionState = new Ammo.btDefaultMotionState(transform);
+
+  const mass = kinematic ? 0 : 1.0;
+  const localInertia = new Ammo.btVector3(0,0,0);
+  if(!kinematic) shape.calculateLocalInertia(mass, localInertia);
+  const rbInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, shape, localInertia);
+  const body = new Ammo.btRigidBody(rbInfo);
+  body.setFriction(0.8);
+  body.setDamping(0.15, 0.5); // linear, angular - evita tremedeira quando virar dinâmico
+
+  if(kinematic){
+    body.setCollisionFlags(body.getCollisionFlags() | 2); // CF_KINEMATIC_OBJECT
+  }
+  body.setActivationState(4); // DISABLE_DEACTIVATION - nunca "dorme"
+
+  physicsWorld.addRigidBody(body);
+  return body;
+}
+function buildRagdollCapsuleBody(radius, height, x, y, z, kinematic){
+  return buildRagdollBody(new Ammo.btCapsuleShape(radius, height), x, y, z, kinematic);
+}
+function buildRagdollSphereBody(radius, x, y, z, kinematic){
+  return buildRagdollBody(new Ammo.btSphereShape(radius), x, y, z, kinematic);
+}
+
+// Monta um btTransform local (offset dentro do corpo) com rotação opcional em Euler.
+// Usado pra apontar o eixo de torção da junta (eixo X local do frame) no sentido
+// do "osso" (que aqui é sempre o eixo Y do corpo), girando 90° em Z.
+function ammoLocalFrame(x, y, z, eulerZ){
+  const t = new Ammo.btTransform();
+  t.setIdentity();
+  t.setOrigin(new Ammo.btVector3(x, y, z));
+  if(eulerZ){
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, eulerZ));
+    t.setRotation(new Ammo.btQuaternion(q.x, q.y, q.z, q.w));
+  }
+  return t;
+}
+
+// Liga duas cápsulas/corpos com uma junta cone-twist (articulação com limite de
+// ângulo, tipo ombro/quadril de verdade) e já desativa colisão entre os dois
+// corpos ligados (senão eles ficam brigando um com o outro na junta).
+function addConeTwist(bodyA, bodyB, frameInA, frameInB, swing1, swing2, twist){
+  const constraint = new Ammo.btConeTwistConstraint(bodyA, bodyB, frameInA, frameInB);
+  constraint.setLimit(swing1, swing2, twist, 1.0, 0.3, 1.0);
+  physicsWorld.addConstraint(constraint, true);
+  return constraint;
+}
+
+// Só builda se o Ammo já estiver pronto E o `opp` já existir - as duas coisas
+// podem terminar em ordens diferentes (Ammo clássico é síncrono e quase
+// sempre termina antes; build moderna via Promise pode terminar depois).
+// Chamada nos dois lugares onde isso pode ficar pronto: fim de initPhysics()
+// e logo depois de buildOpponent() lá embaixo.
+let opponentRagdollBuilt = false;
+function maybeBuildOpponentRagdoll(){
+  if(opponentRagdollBuilt) return;
+  if(!physicsReady || !physicsWorld) return;
+  if(typeof opp === 'undefined' || !opp.hip) return;
+  buildOpponentRagdoll();
+  opponentRagdollBuilt = true;
+}
+
+function buildOpponentRagdoll(){
+  // pose mundial ATUAL de cada parte (o adversário já está de pé, parado, no
+  // spawn dele quando isso roda) - usamos como posição inicial dos corpos.
+  const hipPos = opp.hip.getWorldPosition(new THREE.Vector3());
+  const torsoPos = opp.torsoMesh.getWorldPosition(new THREE.Vector3());
+  const headPos = opp.head.getWorldPosition(new THREE.Vector3());
+  const legLPos = opp.legMeshes.L.getWorldPosition(new THREE.Vector3());
+  const legRPos = opp.legMeshes.R.getWorldPosition(new THREE.Vector3());
+  const armLPos = opp.lArmPivot.getWorldPosition(new THREE.Vector3());
+  const armRPos = opp.rArmPivot.getWorldPosition(new THREE.Vector3());
+
+  const hipBody = buildRagdollCapsuleBody(0.14, 0.06, hipPos.x, hipPos.y, hipPos.z, true);
+  const torsoBody = buildRagdollCapsuleBody(0.16, 0.24, torsoPos.x, torsoPos.y, torsoPos.z, true);
+  const headBody = buildRagdollSphereBody(0.135, headPos.x, headPos.y, headPos.z, true);
+  const legLBody = buildRagdollCapsuleBody(0.065, 0.72, legLPos.x, legLPos.y, legLPos.z, true);
+  const legRBody = buildRagdollCapsuleBody(0.065, 0.72, legRPos.x, legRPos.y, legRPos.z, true);
+  // PASSO 5: braço = corpo único (ombro->pulso), sem cotovelo articulado -
+  // mesma simplificação já usada nas pernas (que também não têm joelho).
+  const armLBody = buildRagdollCapsuleBody(0.055, 0.42, armLPos.x, armLPos.y, armLPos.z, true);
+  const armRBody = buildRagdollCapsuleBody(0.055, 0.42, armRPos.x, armRPos.y, armRPos.z, true);
+
+  // --- juntas (já montadas agora, mesmo cinemático, pra estarem prontas
+  //     quando a gente soltar o ragdoll de verdade num passo futuro) ---
+  addConeTwist(hipBody, torsoBody,
+    ammoLocalFrame(0, 0.09, 0, Math.PI/2),
+    ammoLocalFrame(0, -0.28, 0, Math.PI/2),
+    0.5, 0.5, 0.4); // cintura
+
+  addConeTwist(torsoBody, headBody,
+    ammoLocalFrame(0, 0.28, 0, Math.PI/2),
+    ammoLocalFrame(0, -0.135, 0, Math.PI/2),
+    0.5, 0.5, 0.6); // pescoço
+
+  addConeTwist(hipBody, legLBody,
+    ammoLocalFrame(0.11, -0.09, 0, Math.PI/2),
+    ammoLocalFrame(0, 0.36, 0, Math.PI/2),
+    0.8, 0.5, 0.3); // quadril esquerdo
+
+  addConeTwist(hipBody, legRBody,
+    ammoLocalFrame(-0.11, -0.09, 0, Math.PI/2),
+    ammoLocalFrame(0, 0.36, 0, Math.PI/2),
+    0.8, 0.5, 0.3); // quadril direito
+
+  // Ombros: o corpo do braço fica centrado no PRÓPRIO ombro (não no meio do
+  // braço), porque `syncOpponentRagdollKinematic` sempre escreve a posição do
+  // "mesh" registrado (aqui, o grupo `opp.lArmPivot`/`opp.rArmPivot`, que é a
+  // origem do ombro) - por isso o pivô do lado do braço fica em (0,0,0) (sem
+  // deslocamento) e não na "ponta" da cápsula como nas pernas. É uma
+  // aproximação grosseira (parte da cápsula fica "dentro" do tronco), mas no
+  // mesmo nível de detalhe do resto do ragdoll. Ombro é mais móvel que
+  // quadril, por isso os limites de swing/twist são maiores.
+  addConeTwist(torsoBody, armLBody,
+    ammoLocalFrame(0.26, 0.22, 0, Math.PI/2),
+    ammoLocalFrame(0, 0, 0, Math.PI/2),
+    1.3, 1.0, 1.2); // ombro esquerdo
+
+  addConeTwist(torsoBody, armRBody,
+    ammoLocalFrame(-0.26, 0.22, 0, Math.PI/2),
+    ammoLocalFrame(0, 0, 0, Math.PI/2),
+    1.3, 1.0, 1.2); // ombro direito
+
+  // guarda {body, mesh} de cada parte - o mesh é quem manda por enquanto
+  // (modo cinemático); o body só "segue" pra ficar pronto pro futuro.
+  opp.ragdoll = {
+    hip:   {body: hipBody,   mesh: opp.hip},
+    torso: {body: torsoBody, mesh: opp.torsoMesh},
+    head:  {body: headBody,  mesh: opp.head},
+    legL:  {body: legLBody,  mesh: opp.legMeshes.L},
+    legR:  {body: legRBody,  mesh: opp.legMeshes.R},
+    armL:  {body: armLBody,  mesh: opp.lArmPivot},
+    armR:  {body: armRBody,  mesh: opp.rArmPivot},
+  };
+
+  console.log('[física] ragdoll do adversário criado, incluindo braços (modo cinemático, seguindo a animação manual).');
+}
+
+// Escreve a pose mundial atual de cada mesh visual do `opp` dentro do corpo
+// físico correspondente. Só faz sentido enquanto os corpos estão cinemáticos
+// (mesh manda); quando algum virar dinâmico (ragdoll solto de verdade), essa
+// parte específica deve parar de ser sincronizada aqui (isso é trabalho do
+// próximo passo, em `releaseOpponentRagdoll`).
+function syncOpponentRagdollKinematic(){
+  if(!opp.ragdoll) return;
+  for(const key in opp.ragdoll){
+    const part = opp.ragdoll[key];
+    if(part.dynamic) continue; // já foi solto - não pisa mais em cima da física real
+    const ms = part.body.getMotionState();
+    if(!ms) continue;
+    part.mesh.getWorldPosition(tmpVec3);
+    part.mesh.getWorldQuaternion(tmpQuat);
+    tmpKinTrans.setIdentity();
+    tmpKinTrans.setOrigin(new Ammo.btVector3(tmpVec3.x, tmpVec3.y, tmpVec3.z));
+    tmpKinTrans.setRotation(new Ammo.btQuaternion(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w));
+    ms.setWorldTransform(tmpKinTrans);
+  }
+}
+
+// Aplica um impulso real no corpo físico correspondente (cabeça, tronco...)
+// do ragdoll. IMPORTANTE: enquanto esse corpo estiver cinemático (é o caso
+// agora - ver `buildOpponentRagdoll`), isso é uma chamada segura mas SEM
+// nenhum efeito visual: corpo cinemático ignora impulso/força, o motor só
+// guarda a chamada e descarta. Só vai realmente empurrar/derrubar quando
+// esse corpo virar dinâmico (próximo passo, na queda de verdade).
+// `dirWorld` deve vir normalizado; `magnitude` é o "tamanho" do impulso;
+// `worldPoint` (opcional) é o ponto de impacto no mundo - se vier, o soco
+// também gera torque (gira o corpo), não só empurra reto.
+function applyRagdollImpulse(partKey, dirWorld, magnitude, worldPoint){
+  if(!opp.ragdoll) return;
+  const part = opp.ragdoll[partKey];
+  if(!part || !part.body) return;
+
+  tmpImpulseVec.setValue(dirWorld.x*magnitude, dirWorld.y*magnitude, dirWorld.z*magnitude);
+
+  if(worldPoint){
+    part.mesh.getWorldPosition(tmpImpulsePivot);
+    tmpRelVec.setValue(
+      worldPoint.x - tmpImpulsePivot.x,
+      worldPoint.y - tmpImpulsePivot.y,
+      worldPoint.z - tmpImpulsePivot.z
+    );
+    part.body.applyImpulse(tmpImpulseVec, tmpRelVec);
+  } else {
+    part.body.applyCentralImpulse(tmpImpulseVec);
+  }
+}
+
+// PASSO 3: solta o ragdoll de verdade. Vira os 5 corpos de cinemático pra
+// dinâmico (massa real) e reparenta cada mesh direto pro `scene` (preservando
+// a pose mundial atual - `scene.attach` faz exatamente isso), porque daqui
+// pra frente é o Ammo quem manda na posição/rotação de cada parte, igual já
+// acontece com a bolinha de teste (por isso cada parte entra no `rigidBodies`).
+// Retorna true se conseguiu soltar de verdade, false se não dá (Ammo não
+// carregou, ragdoll não existe etc.) - quem chama cai pro sistema manual antigo.
+// Tudo dentro de try/catch: física/Ammo nunca pode travar o render loop.
+function releaseOpponentRagdoll(impulseVel){
+  if(!physicsReady || !opp.ragdoll || opp.ragdollActive) return false;
+
+  try{
+    const CF_KINEMATIC_OBJECT = 2;
+    // massas aproximadas (kg), só pra ter um "peso" plausível - ajustar depois
+    // de ver o comportamento de verdade no Quest2.
+    const massByPart = {hip:9, torso:7, head:4, legL:3, legR:3, armL:2, armR:2};
+
+    for(const key in opp.ragdoll){
+      const part = opp.ragdoll[key];
+      const body = part.body;
+
+      body.setCollisionFlags(body.getCollisionFlags() & ~CF_KINEMATIC_OBJECT);
+      const mass = massByPart[key] || 3;
+      const localInertia = new Ammo.btVector3(0,0,0);
+      body.getCollisionShape().calculateLocalInertia(mass, localInertia);
+      body.setMassProps(mass, localInertia);
+      body.updateInertiaTensor();
+      body.activate(true);
+
+      scene.attach(part.mesh); // sai da hierarquia manual (hip/torsoPivot/neck) e vira 100% física
+      part.dynamic = true;
+      rigidBodies.push({mesh: part.mesh, body});
+    }
+
+    // joga o impulso da queda no quadril e no tronco - o resto sente pelas juntas
+    const dir = new THREE.Vector3(impulseVel.x, Math.max(impulseVel.y, 0.2), impulseVel.z);
+    const mag = dir.length();
+    const dirN = dir.clone().normalize();
+    applyRagdollImpulse('hip', dirN, mag*6);
+    applyRagdollImpulse('torso', dirN, mag*4);
+
+    opp.ragdollActive = true;
+    opp.fallSettleTimer = 0;
+    return true;
+  } catch(err){
+    console.warn('[física] falha ao soltar o ragdoll, seguindo com a queda manual:', err);
+    return false;
+  }
+}
+
+// PASSO 3 (parte 2): desfaz a soltura - devolve o ragdoll pro modo cinemático
+// e reencaixa cada mesh na hierarquia original do `opp`, na pose "de pé" de
+// sempre. Necessário pra `resetMatch()` (próximo round) não deixar o
+// adversário caído pra sempre depois de um nocaute.
+function reattachRagdollMesh(key, mesh){
+  if(key==='hip'){ opp.root.add(mesh); mesh.position.set(0,0.92,0); mesh.quaternion.identity(); }
+  else if(key==='torso'){ opp.torsoPivot.add(mesh); mesh.position.set(0,0.28,0); mesh.quaternion.identity(); }
+  else if(key==='head'){ opp.neck.add(mesh); mesh.position.set(0,0.14,0); mesh.quaternion.identity(); }
+  else if(key==='legL'){ opp.hip.add(mesh); mesh.position.set(0.11,-0.42,0); mesh.quaternion.identity(); }
+  else if(key==='legR'){ opp.hip.add(mesh); mesh.position.set(-0.11,-0.42,0); mesh.quaternion.identity(); }
+  // braços têm uma leve inclinação de base (-0.1 rad em X, ver `buildArm`) -
+  // por isso usam `rotation.set` em vez de `quaternion.identity()` como as
+  // outras partes, senão a pose de descanso ficaria com o braço reto demais.
+  else if(key==='armL'){ opp.torsoPivot.add(mesh); mesh.position.set(0.26,0.5,0); mesh.rotation.set(-0.1,0,0); }
+  else if(key==='armR'){ opp.torsoPivot.add(mesh); mesh.position.set(-0.26,0.5,0); mesh.rotation.set(-0.1,0,0); }
+}
+function resetOpponentRagdollToKinematic(){
+  if(!opp.ragdoll) return;
+  const CF_KINEMATIC_OBJECT = 2;
+  try{
+    for(const key in opp.ragdoll){
+      const part = opp.ragdoll[key];
+      if(!part.dynamic) continue; // já tá cinemático, nada a fazer
+
+      const idx = rigidBodies.findIndex(e => e.body === part.body);
+      if(idx >= 0) rigidBodies.splice(idx, 1); // sai da sincronização automática física->mesh
+
+      reattachRagdollMesh(key, part.mesh); // volta pro lugar de sempre na hierarquia manual
+
+      part.body.setLinearVelocity(new Ammo.btVector3(0,0,0));
+      part.body.setAngularVelocity(new Ammo.btVector3(0,0,0));
+      part.body.setMassProps(0, new Ammo.btVector3(0,0,0));
+      part.body.setCollisionFlags(part.body.getCollisionFlags() | CF_KINEMATIC_OBJECT);
+      part.body.activate(true);
+      part.dynamic = false;
+    }
+    opp.ragdollActive = false;
+    opp.fallSettleTimer = 0;
+  } catch(err){
+    console.warn('[física] falha ao resetar o ragdoll pro modo cinemático:', err);
+  }
+}
+
+
+// a queda por "assentada" (baixa velocidade no quadril por um tempinho, com
+// uma trava de segurança por tempo máximo) e transiciona o estado do `opp`
+// exatamente como o sistema manual antigo fazia.
+function updateRagdollFallSettle(dt){
+  opp.fallSettleTimer += dt;
+
+  let settled = false;
+  const hipBody = opp.ragdoll && opp.ragdoll.hip && opp.ragdoll.hip.body;
+  if(hipBody){
+    const v = hipBody.getLinearVelocity();
+    const speed = Math.abs(v.x()) + Math.abs(v.y()) + Math.abs(v.z()); // aproximação barata (sem sqrt)
+    settled = (opp.fallSettleTimer > 0.6 && speed < 0.35) || opp.fallSettleTimer > 4.0;
+  } else {
+    settled = opp.fallSettleTimer > 1.2;
+  }
+
+  if(settled){
+    if(opp.fallEndState==='ko'){
+      opp.state = 'ko';
+    } else {
+      opp.state = 'down';
+      opp.getUpProgress = 0;
+      if(!opp.bloodPool){
+        opp.ragdoll.hip.mesh.getWorldPosition(tmpVec3B);
+        opp.bloodPool = spawnFloorBloodPool(tmpVec3B);
+      }
+    }
+  }
+}
+
+
 // Roda a simulação e copia a posição/rotação de cada corpo físico pro mesh Three.js correspondente.
 function stepPhysics(dt){
   if(!physicsReady) return;
+
+  syncOpponentRagdollKinematic(); // escreve a pose atual do opp nos corpos cinemáticos ANTES do step
+
   physicsWorld.stepSimulation(dt, 10);
 
   for(let i=0;i<rigidBodies.length;i++){
@@ -296,6 +722,7 @@ function setupVRButton(){
         if(geo && geo.length>=3){
           const poly = geo.map(p=>({x:p.x, z:p.z}));
           buildBoundaryFence(poly);
+          buildBoundaryColliders(poly); // refaz as paredes físicas pro formato real do guardian - passo 6
           console.log('[guardian] limite real detectado com', poly.length, 'pontos - cerca ajustada.');
         }
       }).catch(()=>{
@@ -682,6 +1109,11 @@ const opp = {
   getUpProgress: 0,               // 0->1: ele foi empurrando o corpo pra levantar
   getUpFrom: new THREE.Quaternion(),
   getUpElapsed: 0,
+
+  // --- ragdoll físico (Ammo) ---
+  ragdoll: null,          // {hip,torso,head,legL,legR} -> {body, mesh, dynamic} (ver buildOpponentRagdoll)
+  ragdollActive: false,   // true depois que startPhysicsFall soltou o ragdoll de verdade
+  fallSettleTimer: 0,     // conta o tempo desde a soltura, pra saber quando ele "assentou" no chão
 };
 
 function buildOpponent(){
@@ -707,11 +1139,13 @@ function buildOpponent(){
 
   // pernas simples + marcador de tornozelo (ponto real de agarre pra puxar e derrubar)
   opp.legAnkles = {};
+  opp.legMeshes = {}; // referência direta ao mesh de cada perna (usado pelo ragdoll físico)
   [1,-1].forEach(sign=>{
     const x = 0.11*sign;
     const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.06,0.85,8), skinMat);
     leg.position.set(x,-0.42,0);
     opp.hip.add(leg);
+    opp.legMeshes[sign===1?'L':'R'] = leg;
     const ankle = new THREE.Object3D();
     ankle.position.set(x, -0.42-0.43, 0.02);
     opp.hip.add(ankle);
@@ -806,6 +1240,7 @@ function buildFace(headMesh){
 }
 
 buildOpponent();
+maybeBuildOpponentRagdoll(); // cobre o caso do Ammo clássico (síncrono), que já deixou physicsReady=true antes daqui
 
 /* estado auxiliar de reação (cabeça/torso) */
 let pitchKick = 0, pitchKickVel = 0;   // cabeça pra cima/baixo
@@ -880,6 +1315,10 @@ function registerHeadHit(speed, controllerVel, hitPoint){
   spawnBloodDecal(opp.head, local, (0.05+Math.random()*0.05) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
+  // impulso real no corpo físico da cabeça do ragdoll (sem efeito visual ainda -
+  // corpo cinemático; ver comentário em `applyRagdollImpulse`). Valor provisório,
+  // ajustar depois que o ragdoll estiver solto de verdade e dermos pra testar.
+  applyRagdollImpulse('head', dir, THREE.MathUtils.clamp(speed*0.8, 0.5, 6), hitPoint);
   pulseHaptics();
   playThud(true);
   if(opp.health>0 && power>26 && Math.random()<0.45 && opp.state==='standing'){
@@ -898,6 +1337,8 @@ function registerBodyHit(speed, controllerVel, hitPoint){
   spawnBloodDecal(opp.torsoMesh, local, (0.05+Math.random()*0.06) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
+  // impulso real no corpo físico do tronco do ragdoll - mesma ressalva do soco na cabeça.
+  applyRagdollImpulse('torso', dir, THREE.MathUtils.clamp(speed*0.6, 0.4, 5), hitPoint);
   pulseHaptics();
   playThud(false);
 }
@@ -934,6 +1375,12 @@ function startPhysicsFall(impulseVel, endState){
 
   opp.fallVel.copy(dir).multiplyScalar(THREE.MathUtils.clamp(impulseVel.length()*0.5, 0.3, 2.2));
   opp.fallVel.y = Math.max(0.15, impulseVel.y*0.5);
+
+  // tenta soltar o ragdoll físico de verdade; se não der (Ammo não carregou,
+  // CDN fora do ar, etc.), `opp.ragdollActive` fica false e o integrador
+  // manual de sempre (logo abaixo, em updateOpponentAI) continua cuidando
+  // da queda exatamente como antes - ninguém percebe a diferença nesse caso.
+  releaseOpponentRagdoll(impulseVel);
 
   // ele caiu: solta qualquer agarre (a mão perde o ponto quando ele desaba)
   releaseGrab(0); releaseGrab(1);
@@ -982,7 +1429,8 @@ function releaseGrab(ci){
 }
 
 // Processa os agarrões ativos todo frame: em pé, puxar a perna/tronco/braço
-// desgasta o equilíbrio real dele; no chão, você arrasta o corpo dele de verdade.
+// desgasta o equilíbrio real dele; no chão, você arrasta o corpo físico dele
+// de verdade via força real no Ammo (perna, tronco ou braço).
 function handleGrabs(dt){
   for(let ci=0; ci<2; ci++){
     const g = grabState[ci];
@@ -1005,9 +1453,27 @@ function handleGrabs(dt){
         setStatus('Ele perdeu o equilíbrio e caiu!');
       }
     } else if(opp.state==='down' || opp.state==='gettingUp'){
-      // arraste real: mova sua mão pra qualquer lado e ele vai junto (com peso)
-      opp.root.position.addScaledVector(horiz, dt*GROUND_DRAG_FACTOR);
-      clampToBoundary(opp.root.position, 0.3);
+      // PASSO 4: se o ragdoll já está solto de verdade (corpo dinâmico), o
+      // arraste agora empurra o corpo físico agarrado (perna ou tronco) -
+      // o resto do boneco segue por causa das juntas (cintura/quadril), então
+      // o "peso" que você sente é física real, não um fator manual copiando
+      // a posição da mão. `opp.root` não tem mais efeito visual aqui: os
+      // meshes já saíram da hierarquia dele quando o ragdoll foi solto
+      // (ver `scene.attach` em `releaseOpponentRagdoll`).
+      const ragdollKey = GRAB_ID_TO_RAGDOLL_KEY[g.id];
+      const part = ragdollKey && opp.ragdoll && opp.ragdoll[ragdollKey];
+
+      if(opp.ragdollActive && part && part.dynamic && part.body){
+        part.body.activate(true);
+        tmpImpulseVec.setValue(horiz.x*GROUND_DRAG_FORCE*dt, 0, horiz.z*GROUND_DRAG_FORCE*dt);
+        part.body.applyCentralImpulse(tmpImpulseVec);
+      } else {
+        // fallback: ragdoll não solto de verdade por algum motivo (Ammo
+        // falhou, corpo ainda não existe etc.) - mantém o comportamento
+        // manual de sempre pra não travar a jogabilidade.
+        opp.root.position.addScaledVector(horiz, dt*GROUND_DRAG_FACTOR);
+        clampToBoundary(opp.root.position, 0.3);
+      }
 
       if(opp.state==='gettingUp'){
         // segurar ele enquanto tenta levantar o derruba de volta
@@ -1090,6 +1556,13 @@ function updateOpponentAI(dt, camXZ){
     opp.stateTimer -= dt;
     if(opp.stateTimer<=0) opp.state='standing';
   } else if(opp.state==='falling_physics'){
+    if(opp.ragdollActive){
+      // ragdoll físico de verdade assumiu - Ammo já move hip/torso/cabeça/pernas
+      // sozinho via `rigidBodies` (no stepPhysics). Aqui só decide quando a
+      // queda "assentou" pra trocar de estado (down/ko), igual o sistema
+      // manual fazia com o ângulo.
+      updateRagdollFallSettle(dt);
+    } else {
     // integrador físico real: velocidade + rotação em torno de um eixo horizontal,
     // desacelerando por atrito/gravidade - nada de animação com tempo fixo.
     opp.fallAngle += opp.fallAngularSpeed*dt;
@@ -1114,6 +1587,7 @@ function updateOpponentAI(dt, camXZ){
         if(!opp.bloodPool) opp.bloodPool = spawnFloorBloodPool(opp.root.position);
       }
     }
+    }
   } else if(opp.state==='down'){
     // ele pesa e está sempre tentando se levantar ou virar de novo pra cima -
     // segure-o (agarrado) pra atrasar isso de verdade, é um cabo de guerra contínuo
@@ -1125,6 +1599,30 @@ function updateOpponentAI(dt, camXZ){
     if(opp.getUpProgress >= 1){
       opp.state = 'gettingUp';
       opp.getUpElapsed = 0;
+
+      // CORREÇÃO: se o ragdoll ainda está solto de verdade (dinâmico - foi
+      // por isso que dava pra arrastar ele com força real no passo 4), devolve
+      // tudo pro modo cinemático/hierarquia animada AGORA, antes de tocar a
+      // animação de "levantar" - senão `opp.root` fica sem efeito visual
+      // nenhum (os meshes já saíram da hierarquia dele em
+      // `releaseOpponentRagdoll`, via `scene.attach`) e o adversário nunca
+      // levanta na tela, só fica largado onde a física deixou.
+      if(opp.ragdollActive){
+        const hipMesh = opp.ragdoll.hip.mesh;
+        hipMesh.getWorldPosition(tmpVec3);
+        hipMesh.getWorldQuaternion(tmpQuat);
+        resetOpponentRagdollToKinematic(); // reencaixa hip/tronco/cabeça/pernas e volta pra kinematic
+
+        // reconstrói `opp.root` a partir da pose real onde o quadril físico
+        // parou, pra não dar um "pulo" visual bem na hora que a hierarquia
+        // volta a mandar (o quadril é filho de `opp.root` num offset local
+        // fixo de (0, 0.92, 0) - ver `reattachRagdollMesh`).
+        opp.root.quaternion.copy(tmpQuat);
+        tmpVec3B.set(0, 0.92, 0).applyQuaternion(opp.root.quaternion);
+        opp.root.position.copy(tmpVec3).sub(tmpVec3B);
+        clampToBoundary(opp.root.position, 0.3);
+      }
+
       opp.getUpFrom.copy(opp.root.quaternion);
       setStatus('Ele está levantando!');
     }
@@ -1338,6 +1836,7 @@ function resetMatch(){
   opp.getUpProgress = 0;
   opp.fallVel.set(0,0,0);
   opp.fallAngle = 0;
+  resetOpponentRagdollToKinematic(); // devolve hip/tronco/cabeça/pernas pro lugar de sempre (senão fica caído pra sempre)
   releaseGrab(0); releaseGrab(1);
   const R0 = window.ARENA_R || 3.2;
   opp.root.position.set(0,0,-(R0*0.55));
