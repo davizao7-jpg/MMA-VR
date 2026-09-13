@@ -147,7 +147,7 @@
   </div>
 </div>
 <button id="vrBtn">ENTRAR NO OCTÓGONO (VR)</button>
-<div id="info">Meta Quest 2: abra este link no Navegador do Quest. Soque de verdade. Pra derrubar: encoste a mão na perna dele e aperte o GATILHO pra agarrar, depois puxe de verdade - ele cai com a força e direção do seu puxão. No chão, agarrado, você pode arrastar o corpo dele pra qualquer lado; solte o gatilho pra largar. Envolva o pescoço com as duas mãos e segure pra finalizar (mata-leão). Configure um limite de área (guardian) de pelo menos 6,5m x 6,5m para melhor aproveitamento.</div>
+<div id="info">Meta Quest 2: abra este link no Navegador do Quest. Soque de verdade. Pra derrubar ELE: encoste a mão na perna dele e aperte o GATILHO pra agarrar, depois puxe de verdade - ele cai com a força e direção do seu puxão. Cuidado: às vezes é ELE que vai pra cima das suas pernas tentando te derrubar - nesse momento (braços dele esticando pra baixo) segure rápido a mão/braço dele (mesmo GATILHO de agarrão) pra evitar a queda. Se não conseguir, DEITE NO CHÃO DE VERDADE pra poder se defender de novo - até deitar, você segue tomando golpe. No chão, agarrado, você pode arrastar o corpo dele pra qualquer lado; solte o gatilho pra largar. Envolva o pescoço com as duas mãos e segure pra finalizar (mata-leão). Configure um limite de área (guardian) de pelo menos 6,5m x 6,5m para melhor aproveitamento.</div>
 <div id="noxr"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -187,8 +187,34 @@ let xrSessionActive = false;
 let prevCamPos = new THREE.Vector3();
 let camVel = new THREE.Vector3();
 
+// MODO CELULAR: fallback simples pra quando o navegador não suporta
+// immersive-vr (qualquer celular comum). NÃO mexe em nada do fluxo VR do
+// Quest2 - é só uma câmera livre (arrasta o dedo/mouse pra olhar ao redor)
+// pra poder testar visual/cenário sem precisar colocar o headset toda hora.
+let vrSupported = false;
+let flatModeActive = false;
+let flatControlsReady = false;
+let flatYaw = 0, flatPitch = 0;
+let flatDragging = false, flatLastX = 0, flatLastY = 0;
+
 const PUNCH_COOLDOWN = 0.30;
 const PUNCH_SPEED_MIN = 1.4;      // m/s mínimo pra contar como soco
+// AJUSTE (força real do soco): antes o dano era `speed*9` com piso de 6 -
+// como PUNCH_SPEED_MIN já é 1.4 m/s, TODO soco que registrava já vinha com
+// uns 30% da força máxima (não existia "fraco de verdade"). Agora a força
+// (0..1) é calculada numa curva entre a velocidade mínima pra contar e uma
+// velocidade de "soco forte de verdade" (~braçada rápida real) - cresce
+// devagar perto do mínimo (toque fraco fica bem fraco mesmo) e só quem bate
+// rápido de verdade chega perto do topo. Essa força (`t`) é o que decide a
+// intensidade da animação do rosto, o dano e o som - tudo junto, igual um
+// soco de verdade.
+const PUNCH_SPEED_HEAVY = 7.2;    // m/s de um soco forte "de verdade" - daqui pra cima já é força máxima
+const PUNCH_FORCE_CURVE = 1.6;    // >1 = cresce devagar no fraco, rápido perto do forte (mais separação real)
+function computePunchForce(speed, minPower, maxPower){
+  const t = THREE.MathUtils.clamp((speed-PUNCH_SPEED_MIN)/(PUNCH_SPEED_HEAVY-PUNCH_SPEED_MIN), 0, 1);
+  const curved = Math.pow(t, PUNCH_FORCE_CURVE);
+  return { power: THREE.MathUtils.lerp(minPower, maxPower, curved), t };
+}
 // Cotovelada: o cotovelo viaja um trajeto mais curto que a mão pra mesma
 // rotação de braço, então costuma ter menos velocidade linear - por isso o
 // mínimo é um pouco mais baixo. Em compensação causa mais dano (ELBOW_DAMAGE_MULT).
@@ -201,7 +227,8 @@ const ELBOW_RADIUS_BONUS = 0.03;  // cotovelo é menor que a luva - raio de acer
 // de "atordoado" igual pra qualquer soco). Ainda sem HUD própria; a ETAPA 4
 // (visão turva/knockdown do jogador) é quem vai reagir visualmente a isso.
 // AJUSTE: vida dobrada (100 -> 200) - o jogador estava morrendo rápido demais.
-let playerHealth = 200, playerMaxHealth = 200;
+// AJUSTE 2: subida pra 600 a pedido do usuário.
+let playerHealth = 600, playerMaxHealth = 600;
 
 // ETAPA 2: os 3 padrões de soco do inimigo, cada um com sua duração de
 // animação, dano e o "jeito" de esquivar. `dodgeMode` diz qual checagem de
@@ -413,6 +440,30 @@ const GETUP_RATE = 0.19;           // progresso de "levantar" por segundo, sem n
 const GETUP_RATE_PINNED = 0.02;    // progresso de "levantar" por segundo, se você tiver ele agarrado
 const FALL_GRAVITY = 9.8;
 
+// NOVO: levantar biomecânico de verdade, em fases - substitui o slerp único
+// de 0->100 que existia antes. `GETUP_DURATION` é bem mais longo (o corpo
+// pesa, ele tem que se organizar) e é dividido em 3 fases pelas frações
+// abaixo: 0..GETUP_PLANT_T = plantar a mão no chão; GETUP_PLANT_T..GETUP_PUSH_T
+// = empurrar com o braço + quadril (a fase mais pesada/instável, tronco bem
+// inclinado pra frente); GETUP_PUSH_T..1 = terminar de esticar o corpo até
+// ficar de pé. Ver o ramo 'gettingUp' de `updateOpponentAI`.
+const GETUP_DURATION = 1.75;
+const GETUP_PLANT_T = 0.30;
+const GETUP_PUSH_T  = 0.72;
+const GETUP_WOBBLE_AMOUNT = 0.10;   // cambaleio de equilíbrio durante o empurrão (fase mais instável)
+const GETUP_INTERRUPT_PENALTY = 0.4; // quanto de getUpProgress ele perde ao ser derrubado de volta no meio do levantar
+
+// NOVO: "rolar pra longe" - a ÚNICA forma de impedir isso é agarrar ele ou
+// deitar peso em cima (ver ramo 'down' de updateOpponentAI); sem nenhum dos
+// dois, ele usa o tempo no chão pra tentar ganhar espaço de verdade (impulso
+// físico real no ragdoll, não um deslizar cosmético) antes de se comprometer
+// a levantar. Só rola enquanto ainda não decidiu ficar de pé de vez.
+const ROLL_AWAY_COOLDOWN_MIN = 1.1;
+const ROLL_AWAY_COOLDOWN_MAX = 2.3;
+const ROLL_AWAY_IMPULSE = 3.2;       // impulso do rolamento em si (quadril)
+const ROLL_AWAY_SPIN_IMPULSE = 1.6;  // impulso fora do centro -> vira giro real de "rolar", não só escorregar reto
+const ROLL_AWAY_MAX_PROGRESS = 0.55; // acima disso ele já está empenhado em levantar e para de fugir
+
 // PASSO 4: arraste no chão vira força real sobre o corpo físico agarrado
 // (perna ou tronco), em vez de mover `opp.root.position` direto. É um valor
 // de força (aplicada como impulso*dt a cada frame), não mais um fator de
@@ -465,19 +516,28 @@ function playerBodyWorldPos(){
   return new THREE.Vector3(head.x, Math.max(0.05, head.y-PLAYER_BODY_DROP), head.z);
 }
 
-// ETAPA 9: tentativa de derrubada do jogador pelo inimigo (só em pé, de
-// perto, tipo um clinch) - vira a mesa da mecânica de agarrão: agora É o
-// inimigo que tenta tirar o equilíbrio do jogador.
-const TAKEDOWN_RANGE = 0.62;          // precisa estar bem colado (clinch) pra tentar
-const TAKEDOWN_COOLDOWN_TIME = 6.5;   // tempo mínimo entre tentativas
-const TAKEDOWN_BASE_CHANCE = 0.30;    // chance base (escalada por groundDominance/agressividade)
+// NOVO (queda telegrafada): o inimigo já não "resolve" a queda na hora por
+// puro dado (RNG). Agora ele se lança de verdade pras suas pernas - um
+// estado próprio (`takedownAttempt`) com animação de investida - e o
+// jogador tem uma janela real (TAKEDOWN_WINDOW) pra segurar a mão/braço dele
+// (agarrão normal) e evitar a queda. Só falha quem não segura a tempo.
+const TAKEDOWN_RANGE = 0.85;          // precisa estar perto (não precisa estar totalmente colado) pra ele partir pra investida
+const TAKEDOWN_COOLDOWN_TIME = 7.5;   // tempo mínimo entre tentativas
+const TAKEDOWN_TRY_CHANCE = 0.5;      // chance dele REALMENTE decidir investir quando as condições batem (escalada por estilo)
+const TAKEDOWN_WINDOW = 1.5;          // segundos que o jogador tem pra segurar mão/braço dele e evitar a queda
+const TAKEDOWN_LUNGE_SPEED = 0.9;     // velocidade de avanço durante a investida
 const TAKEDOWN_DAMAGE = 9;
 const MOUNT_APPROACH_TIME = 0.75;     // tempo "subindo em cima" antes de começar a punir
 const GROUND_PUNISH_COOLDOWN = 0.55;  // ritmo dos socos no chão (mais rápido que em pé)
 const GROUND_PUNISH_DAMAGE = 8;
+const STANDING_PUNISH_COOLDOWN = 0.9; // ritmo dos golpes enquanto a queda já foi bem-sucedida mas o jogador ainda não deitou de verdade
 const MOUNT_RESIST_TIME_NEEDED = 3.2; // segurar o inimigo (agarrão) por esse tempo o derruba de cima de você
 const MOUNT_PIN_RADIUS = 0.55;        // distância "corpo do jogador" <-> tronco do inimigo pra contar como deitado em cima
 const MOUNT_WEIGHT_MULT = 0.4;        // multiplica (reduz) a taxa de "levantar" quando o jogador está de corpo em cima
+// true assim que uma queda dá certo, até o jogador REALMENTE deitar no chão
+// (detectado pela altura física da câmera - ver updatePlayerGroundState).
+// Enquanto isso, ele segue tomando golpes de pé (não tem defesa real).
+let playerNeedsToLieDown = false;
 
 let bloodTex = null;
 let bloodDripTex = null;
@@ -549,7 +609,19 @@ const tmpQuatYaw = new THREE.Quaternion();
 const tmpVec3Hand = new THREE.Vector3();
 const tmpVec3Shoulder = new THREE.Vector3();
 const tmpVec3Mid = new THREE.Vector3();
-const tmpVec3Bend = new THREE.Vector3();
+// AJUSTE (braço real): antes o cotovelo era só o meio do caminho
+// ombro-estimado -> mão real, então toda vez que a mão ficava perto do
+// ombro (guarda, mão perto do rosto/peito - a postura mais comum do jogo)
+// os dois pedaços do braço encolhiam junto, ficando "curtinhos". Agora o
+// braço/antebraço têm comprimento FIXO (tamanho real de braço adulto) e o
+// cotovelo é calculado por IK de 2 ossos (lei dos cossenos) - ele dobra e
+// aponta pra fora/baixo/trás igual um cotovelo de verdade, no comprimento
+// certo, em vez de só espremer o braço inteiro pra caber na distância.
+const UPPER_ARM_LEN = 0.29; // ombro -> cotovelo, em metros
+const FOREARM_LEN   = 0.29; // cotovelo -> mão (controle), em metros
+const tmpElbowDirToHand = new THREE.Vector3();
+const tmpElbowRotAxis = new THREE.Vector3();
+const tmpElbowBendHint = new THREE.Vector3();
 const playerArms = [null, null];
 
 // CORREÇÃO: mesmo problema de ordem - `opponentRagdollBuilt` é lida dentro de
@@ -1134,23 +1206,36 @@ function stepPhysics(dt){
 }
 
 /* ---------------------------- VR bootstrap ---------------------------- */
+// Se immersive-vr existir (Quest2), o botão continua fazendo exatamente o
+// que sempre fez. Se NÃO existir (qualquer celular comum), em vez de travar
+// o botão, ele cai pro MODO CELULAR (startFlatMode) - só câmera livre, sem
+// nenhuma lógica de luta (isso já é garantido de graça porque todo o combate
+// só roda dentro de `if(xrSessionActive)` lá no render()).
 function setupVRButton(){
   const btn = document.getElementById('vrBtn');
   const noxr = document.getElementById('noxr');
-  if(!('xr' in navigator)){
-    btn.disabled = true;
-    btn.textContent = 'WEBXR NÃO DISPONÍVEL NESTE NAVEGADOR';
-    noxr.textContent = 'Abra esta página pelo Navegador do Meta Quest 2 (Oculus Browser).';
-    return;
+
+  function fallBackToFlatMode(msg){
+    vrSupported = false;
+    noxr.textContent = msg;
   }
-  navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
-    if(!ok){
-      btn.disabled = true;
-      btn.textContent = 'VR IMERSIVO NÃO SUPORTADO';
-      noxr.textContent = 'Este dispositivo/navegador não suporta immersive-vr.';
-    }
-  });
+
+  if(!('xr' in navigator)){
+    fallBackToFlatMode('WebXR não disponível neste navegador — modo celular ativado (sem VR imersivo).');
+  } else {
+    navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
+      if(ok){ vrSupported = true; }
+      else{ fallBackToFlatMode('Este dispositivo/navegador não suporta immersive-vr — modo celular ativado.'); }
+    }).catch(()=>{
+      fallBackToFlatMode('Não foi possível checar suporte a VR — modo celular ativado.');
+    });
+  }
+
   btn.addEventListener('click', async ()=>{
+    if(!vrSupported){
+      startFlatMode();
+      return;
+    }
     try{
       const session = await navigator.xr.requestSession('immersive-vr', {
         optionalFeatures: ['local-floor','bounded-floor','hand-tracking']
@@ -1188,6 +1273,60 @@ function setupVRButton(){
       noxr.textContent = 'Não foi possível iniciar a sessão VR: ' + e.message;
     }
   });
+}
+
+// MODO CELULAR: entra "de fato" (esconde botão/instruções, toca o sino) e
+// liga o olhar por arraste. Sem tracking de posição (celular comum não tem),
+// então só fica de pé no centro olhando ao redor - é só isso que foi pedido.
+function startFlatMode(){
+  const btn = document.getElementById('vrBtn');
+  const info = document.getElementById('info');
+  btn.style.display = 'none';
+  info.style.display = 'none';
+  flatModeActive = true;
+  flatYaw = 0;
+  flatPitch = 0;
+  camera.position.set(0, 1.6, 0);
+  camera.rotation.set(0, 0, 0);
+  playBell();
+  setStatus('MODO CELULAR — arraste a tela pra olhar ao redor');
+  setupFlatLookControls();
+}
+
+// Olhar por arraste (dedo no celular, mouse no PC) - roda uma vez só.
+function setupFlatLookControls(){
+  if(flatControlsReady) return;
+  flatControlsReady = true;
+  const el = renderer.domElement;
+  const LOOK_SPEED = 0.0045;
+  const PITCH_LIMIT = Math.PI/2 - 0.05;
+
+  function dragStart(x, y){ flatDragging = true; flatLastX = x; flatLastY = y; }
+  function dragMove(x, y){
+    if(!flatDragging || !flatModeActive) return;
+    const dx = x - flatLastX, dy = y - flatLastY;
+    flatLastX = x; flatLastY = y;
+    flatYaw   -= dx * LOOK_SPEED;
+    flatPitch -= dy * LOOK_SPEED;
+    if(flatPitch >  PITCH_LIMIT) flatPitch =  PITCH_LIMIT;
+    if(flatPitch < -PITCH_LIMIT) flatPitch = -PITCH_LIMIT;
+  }
+  function dragEnd(){ flatDragging = false; }
+
+  el.addEventListener('mousedown', e=> dragStart(e.clientX, e.clientY));
+  window.addEventListener('mousemove', e=> dragMove(e.clientX, e.clientY));
+  window.addEventListener('mouseup', dragEnd);
+
+  el.addEventListener('touchstart', e=>{
+    if(e.touches.length!==1) return;
+    dragStart(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:true});
+  el.addEventListener('touchmove', e=>{
+    if(e.touches.length!==1) return;
+    dragMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:true});
+  el.addEventListener('touchend', dragEnd);
+  el.addEventListener('touchcancel', dragEnd);
 }
 
 // ETAPA 5: tela de menu com os 4 estilos de inimigo. Fica visível por cima de
@@ -1239,7 +1378,8 @@ function setupDifficultyMenu(){
       info.style.display = 'block';
       const styleLabel = (ENEMY_STYLES[pendingStyleKey]||ENEMY_STYLES.balanced).label;
       const diffLabel = (DIFFICULTY_LEVELS[diffKey]||DIFFICULTY_LEVELS.easy).label;
-      vrBtn.textContent = 'ENTRAR NO OCTÓGONO (VR) — ' + styleLabel + ' / ' + diffLabel;
+      const modeLabel = vrSupported ? 'VR' : 'MODO CELULAR';
+      vrBtn.textContent = 'ENTRAR NO OCTÓGONO (' + modeLabel + ') — ' + styleLabel + ' / ' + diffLabel;
     });
   });
 }
@@ -1997,6 +2137,38 @@ function orientSegment(mesh, a, b){
   mesh.quaternion.setFromUnitVectors(UP_Y, tmpVec3Seg.clone().normalize());
 }
 
+// Resolve o cotovelo por IK de 2 ossos (lei dos cossenos): dado o ombro, a
+// mão real e os dois comprimentos fixos (UPPER_ARM_LEN/FOREARM_LEN), acha o
+// ponto de dobra que respeita os dois comprimentos AO MESMO TEMPO - é assim
+// que um cotovelo de verdade se comporta (não é só a metade do caminho).
+function solveElbowIK(shoulder, hand, sign, out){
+  tmpElbowDirToHand.subVectors(hand, shoulder);
+  // não deixa a distância passar da soma dos dois ossos (braço todo
+  // esticado é o limite físico) nem chegar em zero (evita divisão feia)
+  const maxReach = UPPER_ARM_LEN + FOREARM_LEN - 0.001;
+  let d = tmpElbowDirToHand.length();
+  d = THREE.MathUtils.clamp(d, 0.02, maxReach);
+  tmpElbowDirToHand.normalize();
+
+  // ângulo entre ombro->mão e ombro->cotovelo, pela lei dos cossenos
+  const cosA = THREE.MathUtils.clamp(
+    (UPPER_ARM_LEN*UPPER_ARM_LEN + d*d - FOREARM_LEN*FOREARM_LEN) / (2*UPPER_ARM_LEN*d),
+    -1, 1
+  );
+  const angleA = Math.acos(cosA);
+
+  // eixo de dobra: perpendicular à linha ombro->mão, escolhido pra sempre
+  // dobrar o cotovelo pra fora/baixo/trás (postura natural de luta), não
+  // pra dentro/cima (que ficaria estranho)
+  tmpElbowBendHint.set(sign, -0.4, 0.6).normalize();
+  tmpElbowRotAxis.crossVectors(tmpElbowDirToHand, tmpElbowBendHint);
+  if(tmpElbowRotAxis.lengthSq() < 1e-6) tmpElbowRotAxis.set(0,1,0);
+  tmpElbowRotAxis.normalize();
+
+  out.copy(tmpElbowDirToHand).applyAxisAngle(tmpElbowRotAxis, angleA);
+  out.multiplyScalar(UPPER_ARM_LEN).add(shoulder);
+}
+
 function updatePlayerArms(){
   camera.getWorldPosition(tmpVec3Head);
   camera.getWorldQuaternion(tmpQuatHead);
@@ -2014,11 +2186,10 @@ function updatePlayerArms(){
     // ombro estimado: abaixo e pro lado da cabeça, girando junto com ela
     tmpVec3Shoulder.set(0.19*arm.sign, -0.28, 0.02).applyQuaternion(tmpQuatYaw).add(tmpVec3Head);
 
-    // cotovelo calculado: ~metade do caminho até a mão, com leve flexão
-    const armLen = tmpVec3Shoulder.distanceTo(tmpVec3Hand);
-    tmpVec3Bend.set(arm.sign, -0.55, 0.35).normalize();
-    tmpVec3Mid.copy(tmpVec3Shoulder).lerp(tmpVec3Hand, 0.5)
-      .addScaledVector(tmpVec3Bend, Math.min(0.09, armLen*0.18));
+    // cotovelo real: IK de 2 ossos com comprimento fixo (ver solveElbowIK) -
+    // fica onde o cotovelo de verdade estaria, no tamanho certo, em vez de
+    // encolher junto quando a mão está perto do ombro (guarda, por exemplo).
+    solveElbowIK(tmpVec3Shoulder, tmpVec3Hand, arm.sign, tmpVec3Mid);
 
     arm.elbowMesh.position.copy(tmpVec3Mid);
     orientSegment(arm.upperMesh, tmpVec3Shoulder, tmpVec3Mid);
@@ -2040,7 +2211,7 @@ const opp = {
   state:'standing', // standing | staggered | falling_physics | down | gettingUp | mounting | groundPunish | ko | finished
   stateTimer:0,
   // ETAPA 9: derrubada do jogador + mount + punição no chão (ver
-  // attemptPlayerTakedown/updateOpponentAI ramos 'mounting'/'groundPunish').
+  // updateOpponentAI ramos 'takedownAttempt'/'groundPunishWaiting'/'mounting'/'groundPunish').
   takedownCooldown: 2.0, // pequena espera inicial antes da primeira tentativa da luta
   mountApproachT: 0,
   groundPunishTimer: 0.6,
@@ -2103,6 +2274,14 @@ const opp = {
   getUpProgress: 0,               // 0->1: ele foi empurrando o corpo pra levantar
   getUpFrom: new THREE.Quaternion(),
   getUpElapsed: 0,
+  // NOVO: qual braço planta a mão no chão nesta tentativa de levantar (1 =
+  // opp.lArmPivot, -1 = opp.rArmPivot) - sorteado a cada tentativa em
+  // `startGettingUp`, pra não ser sempre o mesmo lado.
+  handPlantSign: 1,
+  // NOVO: tempo até a próxima tentativa de "rolar pra longe" no chão (ver
+  // ramo 'down' de updateOpponentAI) - só conta enquanto ele estiver livre
+  // (sem ser segurado nem ter peso em cima).
+  rollAwayCooldown: 1.5,
 
   // --- ragdoll físico (Ammo) ---
   ragdoll: null,          // {hip,torso,head,legL,legR} -> {body, mesh, dynamic} (ver buildOpponentRagdoll)
@@ -2232,14 +2411,20 @@ function buildFace(headMesh, skinMat){
   const R = 0.135; // raio da cabeça
   const frontZ = R*0.86; // "frente" do rosto (mesmo lado que as luvas apontam, +z)
 
-  // olhos (branco + íris)
+  // olhos (branco + íris) - agrupados por olho pra dar pra animar "cerrando"
+  // (esmagando a escala vertical do grupo) quando leva um soco fraco.
+  opp.eyeGroups = [];
   [-1,1].forEach(sign=>{
+    const eyeGroup = new THREE.Group();
+    eyeGroup.position.set(0.045*sign, 0.015, 0);
+    headMesh.add(eyeGroup);
     const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.017,8,8), eyeWhiteMat);
-    eyeWhite.position.set(0.045*sign, 0.015, frontZ*0.98);
-    headMesh.add(eyeWhite);
+    eyeWhite.position.set(0, 0, frontZ*0.98);
+    eyeGroup.add(eyeWhite);
     const iris = new THREE.Mesh(new THREE.SphereGeometry(0.009,8,8), darkMat);
-    iris.position.set(0.045*sign, 0.015, frontZ*1.06);
-    headMesh.add(iris);
+    iris.position.set(0, 0, frontZ*1.06);
+    eyeGroup.add(iris);
+    opp.eyeGroups.push(eyeGroup);
     // sobrancelha
     const brow = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.012,0.012), darkMat);
     brow.position.set(0.045*sign, 0.045, frontZ*0.95);
@@ -2272,6 +2457,10 @@ maybeBuildOpponentRagdoll(); // cobre o caso do Ammo clássico (síncrono), que 
 let pitchKick = 0, pitchKickVel = 0;   // cabeça pra cima/baixo
 let yawKick = 0, yawKickVel = 0;       // cabeça pro lado (direção do soco)
 let rollKick = 0, rollKickVel = 0;     // ETAPA VISUAL: a cabeça TODA girando/torcendo no pescoço, não só balançando - quanto mais forte o soco, mais ela gira
+// NOVO: reação de olho - soco fraco faz ele só cerrar/apertar os olhos (sem
+// quase mexer a cabeça); em soco forte ainda pisca um pouco, mas quem
+// domina a cena ali é o próprio giro de cabeça (pitch/yaw/roll acima).
+let eyeSquint = 0, eyeSquintVel = 0;
 let torsoLean = 0, torsoLeanVel = 0;   // tronco se encurvando
 let torsoTwist = 0, torsoTwistVel = 0; // ETAPA VISUAL: tronco também torce de lado num soco na barriga, não só dobra pra frente
 // ETAPA VISUAL: recuo visual da luva/antebraço do inimigo quando a guarda
@@ -2455,7 +2644,11 @@ function updatePunchPattern(target, side){
 
 function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
   powerMult = powerMult || 1;
-  let power = THREE.MathUtils.clamp(speed*9, 6, 42) * powerMult;
+  // NOVO: força (0..1) calibrada com a velocidade REAL da sua mão (ver
+  // computePunchForce) - `t` é quem decide o quão exagerada é a reação.
+  const force = computePunchForce(speed, 6, 42);
+  let power = force.power * powerMult;
+  const t = force.t;
 
   // ETAPA 3: ponta do queixo é ponto sensível - acertar bem ali machuca
   // bem mais e quase sempre desequilibra, como um soco de nocaute de verdade.
@@ -2475,16 +2668,19 @@ function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
   applyDamage(power, true);
   // a cabeça recua na direção em que a mão estava se movendo (soco de baixo, de lado, reto)
   const localDir = worldDirToLocal(opp.torsoPivot, controllerVel.clone().normalize());
-  // ETAPA VISUAL: o "kick" agora também escala com a POTÊNCIA do golpe
-  // (não só a velocidade crua), então um soco de verdade forte faz a
-  // cabeça toda girar bem mais que um tapinha - a guarda ainda absorve
-  // parte do impacto visual quando bloqueia.
-  const powerRatio = THREE.MathUtils.clamp(power/42, 0.2, 1);
-  const kick = THREE.MathUtils.clamp(speed*0.35, 0.2, 1.9) * (0.7+powerRatio*0.9) * (mit.blocked ? 0.4 : 1);
+  // NOVO: o giro de cabeça agora segue a MESMA curva de força `t` (não a
+  // velocidade crua) - um toque fraco (t baixo) quase não vira a cabeça;
+  // só um soco rápido de verdade (t alto) faz o rosto virar/girar mesmo.
+  const kickBase = THREE.MathUtils.lerp(0.06, 2.3, Math.pow(t, 1.3));
+  const kick = kickBase * (mit.blocked ? 0.4 : 1);
   pitchKickVel += kick * (0.5 + Math.abs(localDir.y));   // soco de baixo pra cima / cima pra baixo
   yawKickVel   += -localDir.x * kick * 1.5;               // soco vindo de um lado (gancho) - cabeça INTEIRA vira
   rollKickVel  += -localDir.x * kick * 1.1;               // e também GIRA no eixo do pescoço - efeito de "rosto rodando" nos golpes fortes
-  torsoLeanVel += mit.blocked ? 0.15 : 0.4;
+  // NOVO: reação de olho - inversamente proporcional à força. Fraco = ele
+  // cerra/aperta bem os olhos (a cara toda quase não mexe). Forte = a
+  // cabeça já vira tanto que o piscar é só um detalhe a mais.
+  eyeSquintVel += THREE.MathUtils.lerp(1.6, 0.35, t) * (mit.blocked ? 0.5 : 1);
+  torsoLeanVel += mit.blocked ? 0.15 : THREE.MathUtils.lerp(0.08, 0.5, t);
   spawnBloodDecal(opp.head, local, (0.05+Math.random()*0.05) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
@@ -2494,7 +2690,7 @@ function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
   applyRagdollImpulse('head', dir, THREE.MathUtils.clamp(speed*0.8, 0.5, 6), hitPoint);
   pulseHaptics();
   if(mit.blocked){ setStatus('Ele defendeu!'); triggerBlockRecoil(hitSide, power); } // ETAPA VISUAL: mão/braço recua ao bloquear
-  playPunchSound('head', normPower(power, 6, 42));
+  playPunchSound('head', t);
   const staggerChance = isChin ? 0.85 : 0.45; // queixo quase sempre desequilibra
   if(!mit.blocked && opp.headHealth>0 && power>26 && Math.random()<staggerChance && opp.state==='standing'){
     opp.state='staggered'; opp.stateTimer = isChin ? 0.8 : 0.5;
@@ -2503,7 +2699,9 @@ function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
 }
 function registerBodyHit(speed, controllerVel, hitPoint, powerMult){
   powerMult = powerMult || 1;
-  let power = THREE.MathUtils.clamp(speed*5.5, 4, 24) * powerMult;
+  const force = computePunchForce(speed, 4, 24);
+  let power = force.power * powerMult;
+  const t = force.t;
 
   // parte de baixo do tronco = soco na barriga -> ele se encurva bem mais
   const localHit = opp.torsoMesh.worldToLocal(hitPoint.clone());
@@ -2522,13 +2720,12 @@ function registerBodyHit(speed, controllerVel, hitPoint, powerMult){
 
   const dmgRatio = 1 - (opp.bellyHealth/opp.bellyMaxHealth);
   applyDamage(power, false);
-  // ETAPA VISUAL: reação de barriga bem mais evidente - além de se encurvar
-  // pra frente (torsoLean), agora também TORCE de lado na direção do soco
-  // (torsoTwist), como um corpo de verdade reagindo a um golpe no tronco.
-  const powerRatioBody = THREE.MathUtils.clamp(power/24, 0.25, 1);
-  torsoLeanVel += mit.blocked ? 0.12 : (isBelly ? (isSolarPlexus ? 2.1 : 1.5) : 0.35) * (0.7+powerRatioBody*0.6);
+  // NOVO: mesma curva de força `t` (velocidade real da mão), não mais um
+  // piso fixo de 25% - um tapa na barriga mal se encurva; um cruzado de
+  // verdade no fígado dobra ele todo.
+  torsoLeanVel += mit.blocked ? 0.12 : THREE.MathUtils.lerp(0.05, isBelly ? (isSolarPlexus ? 2.3 : 1.7) : 0.4, Math.pow(t,1.3));
   const localDirBody = worldDirToLocal(opp.torsoPivot, controllerVel.clone().normalize());
-  torsoTwistVel += -localDirBody.x * (mit.blocked ? 0.15 : 0.6) * powerRatioBody;
+  torsoTwistVel += -localDirBody.x * (mit.blocked ? 0.15 : THREE.MathUtils.lerp(0.04, 0.65, t));
   spawnBloodDecal(opp.torsoMesh, localHit, (0.05+Math.random()*0.06) * (1+dmgRatio*0.6));
   const dir = controllerVel.clone().normalize();
   spawnBloodBurst(hitPoint, dir);
@@ -2536,19 +2733,19 @@ function registerBodyHit(speed, controllerVel, hitPoint, powerMult){
   applyRagdollImpulse('torso', dir, THREE.MathUtils.clamp(speed*0.6, 0.4, 5), hitPoint);
   pulseHaptics();
   if(mit.blocked){ setStatus('Ele defendeu!'); triggerBlockRecoil(null, power); } // ETAPA VISUAL: cotovelos recuam ao bloquear na barriga
-  playPunchSound('body', normPower(power, 4, 24));
+  playPunchSound('body', t);
   if(!mit.blocked) reactGuard('belly', null); // ETAPA 6: passou de verdade - baixa a guarda pra cobrir a barriga
 }
 function registerGroundPound(speed, controllerVel, hitPoint){
-  const power = THREE.MathUtils.clamp(speed*11, 8, 38);
-  applyDamage(power, true);
+  const force = computePunchForce(speed, 8, 38);
+  applyDamage(force.power, true);
   const local = opp.head.worldToLocal(hitPoint.clone());
   spawnBloodDecal(opp.head, local, 0.06+Math.random()*0.07);
   spawnBloodBurst(hitPoint, controllerVel.clone().normalize());
   if(opp.bloodPool) opp.bloodPool.userData.growTo += 0.03;
   opp.getUpTimer = Math.max(opp.getUpTimer, 3.0); // atordoa mais tempo no chão
   pulseHaptics();
-  playPunchSound('ground', normPower(power, 8, 38));
+  playPunchSound('ground', force.t);
 }
 
 /* ------------------------------ Queda física real (sem animação fixa) ------------------------------ */
@@ -2693,10 +2890,10 @@ function handleGrabs(dt){
       }
 
       if(opp.state==='gettingUp'){
-        // segurar ele enquanto tenta levantar o derruba de volta
-        opp.state = 'down';
-        opp.getUpProgress = Math.max(0, opp.getUpProgress - 0.35);
-        setStatus('Você o derrubou de volta!');
+        // NOVO: segurar ele enquanto tenta levantar tira o equilíbrio dele
+        // de vez - derruba fisicamente de volta (ragdoll de verdade), na
+        // direção real do seu puxão (ver interruptGetUp).
+        interruptGetUp(new THREE.Vector3(horiz.x, 0.25, horiz.z), 'Você o derrubou de volta!');
       }
     }
   }
@@ -2733,6 +2930,39 @@ function startGettingUp(){
   }
 
   opp.getUpFrom.copy(opp.root.quaternion);
+
+  // NOVO: sorteia qual braço planta no chão nessa tentativa e limpa
+  // qualquer resquício de pose de uma tentativa anterior interrompida
+  // (senão ele podia "herdar" uma inclinação de tronco ou cambaleio do
+  // levantar que apanhou antes).
+  opp.handPlantSign = Math.random()<0.5 ? 1 : -1;
+  opp.torsoPivot.rotation.x = 0;
+  opp.root.rotation.z = 0;
+}
+
+// NOVO: quebra a tentativa de levantar no meio - chamado quando o jogador
+// tira o equilíbrio dele de novo (agarrão, um golpe bem colocado durante a
+// subida) ou deita peso em cima. Em vez de só "teleportar" de volta pro
+// estado 'down', reativa o ragdoll físico DE VERDADE a partir da pose exata
+// em que ele estava tentando levantar - ele tomba fisicamente, com a força e
+// direção do impulso recebido, igual a queda original. `getUpProgress`
+// também recua, então ele precisa reconquistar o direito de tentar de novo.
+function interruptGetUp(impulseVel, msg){
+  if(opp.state!=='gettingUp') return;
+  opp.getUpProgress = Math.max(0, opp.getUpProgress - GETUP_INTERRUPT_PENALTY);
+  const vel = impulseVel || new THREE.Vector3(0, 0.3, 0);
+  releaseOpponentRagdoll(vel); // se o Ammo não deixar (raro), ele fica na pose atual mesmo - fallback seguro
+  // CORREÇÃO: se essa tentativa de levantar veio de um nocaute (koTimer já
+  // tinha zerado), volta como uma queda normal - senão o ramo 'down' via
+  // downCause==='knockout' checaria koTimer<=0 de novo no PRÓXIMO frame e ele
+  // tentaria levantar instantaneamente nas mesmas condições, ignorando a
+  // interrupção que você acabou de causar.
+  opp.downCause = 'throw';
+  opp.state = 'down';
+  // acabou de apanhar tentando levantar - tenta rolar pra longe de novo logo,
+  // em vez de esperar o cooldown inteiro parado no lugar
+  opp.rollAwayCooldown = ROLL_AWAY_COOLDOWN_MIN*0.5;
+  if(msg) setStatus(msg);
 }
 
 /* ------------------------------ IA / animação idle ------------------------------ */
@@ -2804,14 +3034,27 @@ function updateOpponentAI(dt, camXZ){
     // (idealDistance/aggressiveness = 1) reproduz exatamente os números
     // antigos, então nada muda pra quem ainda não escolheu estilo.
     const idealDist = style.idealDistance;
-    const farThreshold = 1.9*idealDist, closeThreshold = 0.55*idealDist;
-    const hardFar = 2.2*idealDist, hardClose = 0.45*idealDist;
+    // AJUSTE (distância de luta): limiares mais largos - o inimigo agora
+    // circula/recua de verdade numa distância de combate normal em vez de
+    // ficar colado. `hardClose` é o mínimo que ele tolera fora de um golpe
+    // ou da investida de queda - abaixo disso ele SEMPRE recua, sem exceção.
+    const farThreshold = 1.9*idealDist, closeThreshold = 0.85*idealDist;
+    const hardFar = 2.2*idealDist, hardClose = 0.7*idealDist;
 
-    // ETAPA 9: de perto (clinch) o inimigo também pode tentar te derrubar,
-    // em vez de só trocar soco - independente do timer normal de ataque.
+    // NOVO: de perto (mas sem precisar estar colado) o inimigo pode decidir
+    // partir pra uma investida de queda, em vez de só trocar soco. Não
+    // resolve mais na hora - só entra no estado 'takedownAttempt' (ver mais
+    // abaixo), que dá ao jogador uma janela real pra se defender segurando.
     opp.takedownCooldown -= dt;
-    if(opp.takedownCooldown<=0 && dist < TAKEDOWN_RANGE*idealDist && playerGroundState==='standing' && !opp.attacking){
-      attemptPlayerTakedown();
+    if(opp.takedownCooldown<=0 && dist < TAKEDOWN_RANGE*idealDist && playerGroundState==='standing' && !playerNeedsToLieDown && !opp.attacking){
+      opp.takedownCooldown = TAKEDOWN_COOLDOWN_TIME;
+      const tryChance = THREE.MathUtils.clamp(TAKEDOWN_TRY_CHANCE*style.groundDominance*style.aggressiveness, 0.12, 0.9);
+      if(Math.random() < tryChance){
+        opp.state = 'takedownAttempt';
+        opp.takedownT = 0;
+        setStatus('Ele vai pra cima das suas pernas! Segure a mão/braço dele!');
+        return; // pula o resto da lógica de 'standing' nesse frame - já não é mais esse estado
+      }
     }
 
     // Escolhe um "modo" de deslocamento de tempos em tempos: aproximar, recuar
@@ -2849,9 +3092,15 @@ function updateOpponentAI(dt, camXZ){
       moveDir.set(dirToPlayer.z, 0, -dirToPlayer.x).multiplyScalar(opp.circleDir);
       moveSpeed = 0.65*spdMult;
     }
-    // sempre mantém uma leve tendência a não ficar longe demais nem colar demais
+    // sempre mantém uma leve tendência a não ficar longe demais
     if(dist>hardFar) moveDir.lerp(dirToPlayer, 0.5);
-    if(dist<hardClose) moveDir.lerp(dirToPlayer.clone().multiplyScalar(-1), 0.6);
+    // AJUSTE: abaixo do mínimo tolerável ele SEMPRE recua de verdade (não é
+    // só uma tendência leve) - é isso que impede o "colado" fora de golpe/
+    // investida de queda, que têm seu próprio movimento à parte.
+    if(dist<hardClose){
+      moveDir.copy(dirToPlayer).multiplyScalar(-1);
+      moveSpeed = Math.max(moveSpeed, 0.6*spdMult);
+    }
 
     opp.root.position.addScaledVector(moveDir, dt*moveSpeed);
     updateHeadDodge(dt); // ETAPA 5: esquiva de cabeça/tronco reagindo às mãos do jogador
@@ -2961,6 +3210,49 @@ function updateOpponentAI(dt, camXZ){
     if(!(opp.attacking && opp.attackType==='cross')){
       opp.torsoPivot.rotation.y = THREE.MathUtils.lerp(opp.torsoPivot.rotation.y, 0, dt*6);
     }
+  } else if(opp.state==='takedownAttempt'){
+    // NOVO: investida de queda telegrafada. Avança se inclinando pra pegar
+    // as pernas do jogador; braços esticam pra baixo/frente indo buscar.
+    // Defesa: o jogador segurar a mão/braço dele (agarrão normal) a
+    // qualquer momento dentro da janela cancela a queda.
+    opp.takedownT += dt;
+    const tw = Math.min(opp.takedownT/TAKEDOWN_WINDOW, 1);
+    const toPlayer2 = new THREE.Vector3(camXZ.x-opp.root.position.x,0,camXZ.z-opp.root.position.z);
+    if(toPlayer2.length()>0.4) opp.root.position.addScaledVector(toPlayer2.normalize(), dt*TAKEDOWN_LUNGE_SPEED);
+    opp.root.lookAt(camXZ.x, opp.root.position.y, camXZ.z);
+    opp.root.rotation.x = tw*0.4; // mergulha pra frente
+    clampToBoundary(opp.root.position, 0.35);
+    opp.hip.position.y = THREE.MathUtils.lerp(0.92, 0.68, tw); // agacha buscando as pernas
+    opp.lArmPivot.rotation.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
+    opp.rArmPivot.rotation.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
+    if(opp.lArmPivot.userData.elbow) opp.lArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(GUARD_ELBOW_HIGH, 0.15, tw);
+    if(opp.rArmPivot.userData.elbow) opp.rArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(GUARD_ELBOW_HIGH, 0.15, tw);
+
+    const armHeld = (grabState[0].active && grabState[0].part==='arm') || (grabState[1].active && grabState[1].part==='arm');
+    if(armHeld) resolveTakedownDefended();
+    else if(tw>=1) resolveTakedownSuccess();
+  } else if(opp.state==='groundPunishWaiting'){
+    // NOVO: a queda deu certo, mas o jogador ainda está FISICAMENTE em pé
+    // (não deitou de verdade ainda). Ele continua vindo pra cima e batendo -
+    // sem defesa real - até o sensor de altura real da câmera confirmar que
+    // o jogador deitou (ver updatePlayerGroundState/PLAYER_DOWN_HEIGHT_RATIO).
+    const toPlayer3 = new THREE.Vector3(camXZ.x-opp.root.position.x,0,camXZ.z-opp.root.position.z);
+    if(toPlayer3.length()>0.5){ opp.root.position.addScaledVector(toPlayer3.normalize(), dt*0.7); clampToBoundary(opp.root.position, 0.35); }
+    opp.root.lookAt(camXZ.x, opp.root.position.y, camXZ.z);
+
+    opp.groundPunishTimer -= dt;
+    if(opp.groundPunishTimer<=0){
+      opp.groundPunishTimer = STANDING_PUNISH_COOLDOWN;
+      resolveGroundPunishOnPlayer();
+      setStatus('VOCÊ FOI DERRUBADO — DEITE NO CHÃO DE VERDADE!');
+    }
+
+    if(playerGroundState==='down'){
+      playerNeedsToLieDown = false;
+      opp.state = 'mounting';
+      opp.mountApproachT = 0;
+      setStatus('Você deitou - ele tenta te dominar no chão!');
+    }
   } else if(opp.state==='staggered'){
     opp.stateTimer -= dt;
     if(opp.stateTimer<=0) opp.state='standing';
@@ -3037,25 +3329,118 @@ function updateOpponentAI(dt, camXZ){
       // inimigo caído. Isso dificulta AINDA MAIS ele levantar, além do
       // agarrão de mão normal (os dois efeitos se somam).
       const lyingOnTop = playerGroundState==='down' && playerBodyWorldPos().distanceTo(torsoTopWorldPos()) < MOUNT_PIN_RADIUS;
+
+      // NOVO: rolar pra longe. As ÚNICAS duas formas de impedir são as que o
+      // jogador pediu - agarrar (beingHeld) ou deitar peso em cima
+      // (lyingOnTop). Sem nenhum dos dois, e enquanto ele ainda não estiver
+      // comprometido de vez com o levantar (getUpProgress baixo), ele usa
+      // impulsos físicos REAIS no ragdoll (não um "teleporte" cosmético) pra
+      // tentar ganhar espaço - o atrito e a inércia do próprio Ammo é que
+      // fazem o corpo tombar/girar feito um rolamento de verdade.
+      if(!beingHeld && !lyingOnTop && opp.downCause!=='knockout' && opp.getUpProgress < ROLL_AWAY_MAX_PROGRESS){
+        opp.rollAwayCooldown -= dt;
+        if(opp.rollAwayCooldown <= 0){
+          opp.rollAwayCooldown = ROLL_AWAY_COOLDOWN_MIN + Math.random()*(ROLL_AWAY_COOLDOWN_MAX-ROLL_AWAY_COOLDOWN_MIN);
+          const away = new THREE.Vector3(opp.root.position.x-camXZ.x, 0, opp.root.position.z-camXZ.z);
+          if(away.lengthSq() < 0.0001) away.set(Math.random()-0.5, 0, Math.random()-0.5);
+          away.normalize();
+          if(opp.ragdollActive && opp.ragdoll && opp.ragdoll.hip.body){
+            applyRagdollImpulse('hip', away, ROLL_AWAY_IMPULSE);
+            applyRagdollImpulse('torso', away, ROLL_AWAY_IMPULSE*0.6);
+            // ponto de impacto deslocado da lateral do quadril -> gera torque
+            // de verdade (ele GIRA rolando, não só escorrega reto no chão)
+            const hipPos = opp.ragdoll.hip.mesh.getWorldPosition(new THREE.Vector3());
+            const offPoint = hipPos.clone().add(new THREE.Vector3(away.z, 0.12, -away.x).multiplyScalar(0.18));
+            applyRagdollImpulse('hip', new THREE.Vector3(0,1,0), ROLL_AWAY_SPIN_IMPULSE, offPoint);
+          } else {
+            // sem ragdoll físico ativo (fallback, Ammo indisponível): pelo
+            // menos desloca a posição na hora, mantendo a jogabilidade igual
+            opp.root.position.addScaledVector(away, 0.55);
+            clampToBoundary(opp.root.position, 0.25);
+          }
+          setStatus('Ele está tentando rolar pra longe!');
+        }
+      }
+
       const rate = (beingHeld ? GETUP_RATE_PINNED : GETUP_RATE) * style.groundDominance * (lyingOnTop ? MOUNT_WEIGHT_MULT : 1);
       opp.getUpProgress = Math.min(1, opp.getUpProgress + dt*rate);
       if(opp.getUpProgress >= 1){
         startGettingUp();
-        setStatus('Ele está levantando!');
+        setStatus('Ele está tentando levantar...');
       }
     }
   } else if(opp.state==='gettingUp'){
-    // levantar também é contínuo e pode ser interrompido a qualquer momento
-    // se você agarrar ele de novo (handleGrabs devolve pro estado 'down')
+    // NOVO: levantar biomecânico de verdade, em 3 fases (nada de 0->100
+    // instantâneo). Pode ser interrompido a qualquer momento por agarrão
+    // (handleGrabs), por um golpe bem colocado (handlePunch/handleElbowStrike)
+    // ou por peso em cima (checado logo abaixo) - todos via `interruptGetUp`,
+    // que derruba ele fisicamente de volta a partir da pose exata em que
+    // estava.
     opp.getUpElapsed += dt;
-    const t = Math.min(1, opp.getUpElapsed/0.9);
-    opp.root.quaternion.slerpQuaternions(opp.getUpFrom, opp.facingBase, t);
-    opp.root.position.y = THREE.MathUtils.lerp(opp.root.position.y, 0, t);
-    if(t>=1){
+    const u = Math.min(1, opp.getUpElapsed/GETUP_DURATION);
+
+    // easing lento-rápido-lento: o corpo demora mais pra sair do chão e mais
+    // pra terminar de esticar, e só "decide" mais rápido no meio do empurrão
+    // - em vez de uma velocidade constante e robótica.
+    const eased = u<0.5 ? 2*u*u : 1-Math.pow(-2*u+2, 2)/2;
+    opp.root.quaternion.slerpQuaternions(opp.getUpFrom, opp.facingBase, eased);
+    opp.root.position.y = THREE.MathUtils.lerp(opp.root.position.y, 0, eased);
+
+    const plantArm = opp.handPlantSign>0 ? opp.lArmPivot : opp.rArmPivot;
+    const otherArm = opp.handPlantSign>0 ? opp.rArmPivot : opp.lArmPivot;
+
+    if(u < GETUP_PLANT_T){
+      // FASE 1 - plantar a mão: o braço sorteado estica pra baixo/frente,
+      // buscando apoio real no chão; o outro braço ainda está se organizando.
+      const pt = THREE.MathUtils.clamp(u/GETUP_PLANT_T, 0, 1);
+      plantArm.rotation.x = THREE.MathUtils.lerp(0.1, 1.75, pt);
+      if(plantArm.userData.elbow) plantArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(0.3, 0.2, pt);
+      otherArm.rotation.x = THREE.MathUtils.lerp(0.1, 0.9, pt);
+      if(otherArm.userData.elbow) otherArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(0.3, 1.3, pt);
+      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(0, -0.35, pt);
+      opp.hip.position.y = THREE.MathUtils.lerp(0.5, 0.55, pt);
+    } else if(u < GETUP_PUSH_T){
+      // FASE 2 - empurrar: o peso vai todo pro braço plantado + quadril, que
+      // sobe empurrando o "chão" pra baixo; tronco bem inclinado pra frente
+      // (postura real de quem está fazendo força pra se erguer) com um
+      // cambaleio de equilíbrio genuíno nessa parte mais instável.
+      const pu = THREE.MathUtils.clamp((u-GETUP_PLANT_T)/(GETUP_PUSH_T-GETUP_PLANT_T), 0, 1);
+      plantArm.rotation.x = THREE.MathUtils.lerp(1.75, 1.5, pu);
+      otherArm.rotation.x = THREE.MathUtils.lerp(0.9, 0.5, pu);
+      if(otherArm.userData.elbow) otherArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(1.3, 0.8, pu);
+      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(-0.35, -0.85, Math.sin(pu*Math.PI));
+      opp.hip.position.y = THREE.MathUtils.lerp(0.55, 0.78, pu);
+
+      // some perto do fim da fase (achou o equilíbrio) e é maior quanto mais
+      // machucado ele estiver / menos "domínio de chão" o estilo dele tiver.
+      const dmgWobble = 1 + (1-opp.headHealth/opp.headMaxHealth)*0.6 + (1-opp.bellyHealth/opp.bellyMaxHealth)*0.4;
+      const wobbleWindow = Math.sin(pu*Math.PI);
+      opp.root.rotation.z = Math.sin(performance.now()*0.018)*GETUP_WOBBLE_AMOUNT*wobbleWindow*dmgWobble/style.groundDominance;
+    } else {
+      // FASE 3 - erguer: solta o apoio da mão, estica o corpo e volta pra
+      // postura de guarda normal - só aqui ele realmente termina de pé.
+      const pr = THREE.MathUtils.clamp((u-GETUP_PUSH_T)/(1-GETUP_PUSH_T), 0, 1);
+      opp.lArmPivot.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.rotation.x, GUARD_SHOULDER_HIGH, pr);
+      opp.rArmPivot.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.rotation.x, GUARD_SHOULDER_HIGH, pr);
+      if(opp.lArmPivot.userData.elbow) opp.lArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.userData.elbow.rotation.x, GUARD_ELBOW_HIGH, pr);
+      if(opp.rArmPivot.userData.elbow) opp.rArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.userData.elbow.rotation.x, GUARD_ELBOW_HIGH, pr);
+      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(-0.85, 0, pr);
+      opp.hip.position.y = THREE.MathUtils.lerp(0.78, 0.92, pr);
+      opp.root.rotation.z = THREE.MathUtils.lerp(opp.root.rotation.z, 0, pr);
+    }
+
+    // NOVO: peso em cima (jogador deitado sobre ele) durante a subida também
+    // derruba de volta - antes só contava dentro do estado 'down'.
+    const lyingOnTopNow = playerGroundState==='down' && playerBodyWorldPos().distanceTo(torsoTopWorldPos()) < MOUNT_PIN_RADIUS;
+    if(lyingOnTopNow){
+      interruptGetUp(new THREE.Vector3(0,0.3,0), 'Você o prendeu no chão de novo!');
+    } else if(u >= 1){
       opp.state = 'standing';
       opp.stability = STABILITY_MAX;
       opp.getUpProgress = 0;
       opp.root.position.y = 0;
+      opp.root.rotation.z = 0;
+      opp.torsoPivot.rotation.x = 0;
       setStatus('Ele levantou!');
     }
   } else if(opp.state==='mounting'){
@@ -3135,6 +3520,14 @@ function updateOpponentAI(dt, camXZ){
   opp.neck.rotation.x = -pitchKick;
   opp.neck.rotation.y = THREE.MathUtils.clamp(yawKick, -1.3, 1.3);
   opp.neck.rotation.z = THREE.MathUtils.clamp(rollKick, -1.0, 1.0);
+
+  // NOVO: cerrar/apertar os olhos (mola rápida e rígida - fecha rápido,
+  // volta rápido) - achata o grupo do olho na vertical simulando o
+  // piscar/apertar forte quando leva um soco fraco na cara.
+  eyeSquintVel += -eyeSquint*30*dt - eyeSquintVel*9*dt;
+  eyeSquint += eyeSquintVel*dt;
+  const squintScale = THREE.MathUtils.clamp(1 - eyeSquint, 0.12, 1);
+  if(opp.eyeGroups) opp.eyeGroups.forEach(g=> g.scale.y = squintScale);
 
   torsoLeanVel += -torsoLean*10*dt - torsoLeanVel*5*dt;
   torsoLean += torsoLeanVel*dt;
@@ -3259,27 +3652,35 @@ function updatePlayerGroundState(dt){
   }
 }
 
-// ETAPA 9: o inimigo tenta derrubar o jogador (clinch de perto). Segurar ele
-// com o agarrão já existente atrapalha a tentativa (mais difícil de
-// desequilibrar quem está bem preso). Sucesso manda o jogador pro chão de
-// verdade (via playerGroundState) e o inimigo parte pro "mount".
-function attemptPlayerTakedown(){
-  const style = opp.style || ENEMY_STYLES.balanced;
-  const held = grabState[0].active || grabState[1].active;
-  opp.takedownCooldown = TAKEDOWN_COOLDOWN_TIME;
-  const chance = THREE.MathUtils.clamp(TAKEDOWN_BASE_CHANCE*style.groundDominance*style.aggressiveness*(held?0.35:1), 0.05, 0.85);
-  if(Math.random() > chance){
-    setStatus('Ele tentou te derrubar - você resistiu!');
-    return;
-  }
-  playerGroundState = 'down';
-  playerDownConfirmTimer = PLAYER_DOWN_CONFIRM_TIME; // já entra confirmado, sem esperar o sensor "pegar"
-  playerHealth = Math.max(0, playerHealth - TAKEDOWN_DAMAGE);
-  flashDazed(0.7);
+// NOVO: reseta a pose da investida (inclinação + agachada + braços) de volta
+// ao normal - chamado tanto quando a queda é defendida quanto quando dá
+// certo, pra ele não ficar "preso" na pose de mergulho depois.
+function resetTakedownPose(){
+  opp.root.rotation.x = 0;
+  opp.hip.position.y = 0.92;
+}
+// O jogador segurou a mão/braço dele a tempo - queda cancelada. Ele fica
+// levemente desequilibrado pela própria investida (stagger curto).
+function resolveTakedownDefended(){
+  resetTakedownPose();
+  opp.state = 'staggered';
+  opp.stateTimer = 0.6;
   pulseHaptics();
-  opp.state = 'mounting';
-  opp.mountApproachT = 0;
-  setStatus('Ele te derrubou e está subindo em cima!');
+  setStatus('Você segurou e evitou a queda!');
+}
+// A janela (TAKEDOWN_WINDOW) acabou sem defesa - a queda dá certo de
+// verdade. O jogador ainda não caiu fisicamente (só na narrativa do jogo) -
+// ele entra num limbo vulnerável (`groundPunishWaiting`) tomando golpes de
+// pé até realmente deitar no chão de verdade (ver updatePlayerGroundState).
+function resolveTakedownSuccess(){
+  resetTakedownPose();
+  playerNeedsToLieDown = true;
+  playerHealth = Math.max(0, playerHealth - TAKEDOWN_DAMAGE);
+  flashDazed(0.8);
+  pulseHaptics();
+  opp.state = 'groundPunishWaiting';
+  opp.groundPunishTimer = STANDING_PUNISH_COOLDOWN;
+  setStatus('VOCÊ FOI DERRUBADO — DEITE NO CHÃO!');
 }
 
 // ETAPA 9: soco de punição no chão (o inverso de registerGroundPound - ali
@@ -3527,6 +3928,13 @@ function pulseHaptics(){
 function render(){
   const dt = Math.min(clock.getDelta(), 0.05);
 
+  // MODO CELULAR: sem sessão XR, quem gira a câmera é o arraste do dedo/mouse
+  // (ver setupFlatLookControls). Fora isso o resto do render segue igual.
+  if(flatModeActive && !xrSessionActive){
+    camera.rotation.order = 'YXZ';
+    camera.rotation.set(flatPitch, flatYaw, 0);
+  }
+
   if(xrSessionActive){
     const camWorld = camera.getWorldPosition(new THREE.Vector3());
     camVel.copy(camWorld).sub(prevCamPos).divideScalar(Math.max(dt,0.0001));
@@ -3592,6 +4000,19 @@ function handleController(ci, ctrl, dt){
       registerGroundPound(speed, vel, pos);
       lastPunchTime[ci]=0;
     }
+  } else if(opp.state==='gettingUp'){
+    // NOVO: acertar ele em cheio enquanto tenta levantar tira o equilíbrio de
+    // novo - não é só um golpe "de graça", quebra a tentativa e ele tomba
+    // fisicamente pra trás (mesma ideia do agarrão, ver interruptGetUp).
+    const headP = headWorldPos();
+    const top = torsoTopWorldPos(), bot = torsoBotWorldPos();
+    const hitHead = pos.distanceTo(headP) < HEAD_RADIUS+0.05;
+    const hitTorso = !hitHead && pos.distanceTo(closestPointOnSegment(pos, top, bot)) < TORSO_RADIUS;
+    if(hitHead || hitTorso){
+      registerGroundPound(speed, vel, pos);
+      interruptGetUp(vel.clone().normalize().multiplyScalar(0.6).setY(0.3), 'Você o derrubou de volta!');
+      lastPunchTime[ci]=0;
+    }
   }
 }
 
@@ -3630,6 +4051,18 @@ function handleElbowStrike(ci, dt){
     const headP = headWorldPos();
     if(pos.distanceTo(headP) < HEAD_RADIUS+0.05+ELBOW_RADIUS_BONUS){
       registerGroundPound(speed, vel, pos);
+      lastElbowTime[ci]=0;
+    }
+  } else if(opp.state==='gettingUp'){
+    // NOVO: mesma ideia do soco - cotovelada bem colocada durante a subida
+    // também quebra o equilíbrio e derruba ele de volta fisicamente.
+    const headP = headWorldPos();
+    const top = torsoTopWorldPos(), bot = torsoBotWorldPos();
+    const hitHead = pos.distanceTo(headP) < HEAD_RADIUS+0.05+ELBOW_RADIUS_BONUS;
+    const hitTorso = !hitHead && pos.distanceTo(closestPointOnSegment(pos, top, bot)) < TORSO_RADIUS+ELBOW_RADIUS_BONUS;
+    if(hitHead || hitTorso){
+      registerGroundPound(speed, vel, pos);
+      interruptGetUp(vel.clone().normalize().multiplyScalar(0.6).setY(0.3), 'Você o derrubou de volta!');
       lastElbowTime[ci]=0;
     }
   }
@@ -3680,6 +4113,11 @@ function resetMatch(){
   opp.lastHitTime = -999;
   opp.stability = STABILITY_MAX;
   opp.getUpProgress = 0;
+  opp.handPlantSign = 1;             // NOVO
+  opp.rollAwayCooldown = 1.5;        // NOVO
+  opp.torsoPivot.rotation.x = 0;     // NOVO: limpa inclinação residual do levantar
+  opp.root.rotation.z = 0;           // NOVO: limpa cambaleio residual do levantar
+  opp.hip.position.y = 0.92;         // NOVO: garante quadril na altura padrão de pé
   opp.fallVel.set(0,0,0);
   opp.fallAngle = 0;
   // ETAPA 4: reseta o knockdown com recuperação decrescente pra revanche
@@ -3694,12 +4132,16 @@ function resetMatch(){
   opp.mountResist = 0;
   playerGroundState = 'standing';
   playerDownConfirmTimer = 0;
+  playerNeedsToLieDown = false; // NOVO: reseta o limbo "caiu mas ainda não deitou" pra revanche
+  resetTakedownPose(); // NOVO: garante que não sobra pose de investida (inclinado/agachado) da luta anterior
   resetOpponentRagdollToKinematic(); // devolve hip/tronco/cabeça/pernas pro lugar de sempre (senão fica caído pra sempre)
   releaseGrab(0); releaseGrab(1);
   const R0 = window.ARENA_R || 3.2;
   opp.root.position.set(0,0,-(R0*0.55));
   opp.root.quaternion.copy(opp.facingBase);
   pitchKick=0; pitchKickVel=0; yawKick=0; yawKickVel=0; rollKick=0; rollKickVel=0;
+  eyeSquint=0; eyeSquintVel=0;
+  if(opp.eyeGroups) opp.eyeGroups.forEach(g=> g.scale.y = 1);
   torsoLean=0; torsoLeanVel=0; torsoTwist=0; torsoTwistVel=0;
   blockRecoilL=0; blockRecoilLVel=0; blockRecoilR=0; blockRecoilRVel=0;
   [opp.head, opp.torsoMesh].forEach(m=>{
