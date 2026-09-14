@@ -1495,6 +1495,51 @@ function updateArmMuscles(dt){
 }
 
 // Roda a simulação e copia a posição/rotação de cada corpo físico pro mesh Three.js correspondente.
+// CORREÇÃO (raiz do travamento ao puxar a perna / no knockdown): os ajustes
+// anteriores só limitavam a FORÇA/TORQUE que a GENTE aplicava (agarrão,
+// mola de equilíbrio) - mas isso não impede que uma junta cone-twist (ex.:
+// joelho/tornozelo esticado além do limite dela num puxão forte, ou o
+// quadril recebendo o impulso do knockdown) responda com uma velocidade
+// ENORME depois do próprio `stepSimulation` do Ammo/Bullet, já dentro do
+// solver de restrições - isso não tem relação com a força que a gente
+// aplicou antes do step, então mexer só nela (2 rodadas) não adiantava nada.
+// Quando isso acontece, o PRÓPRIO passo de física fica extremamente caro
+// (o solver tenta corrigir uma violação gigante da junta) - trava a aba por
+// vários segundos NUM SÓ FRAME (parece travamento total, não física
+// "explodindo aos poucos"), e só DEPOIS disso o valor eventualmente vira
+// NaN (que a checagem de baixo já tratava, mas tarde demais - o travamento
+// já tinha acontecido). A correção de verdade é limitar a VELOCIDADE de
+// cada corpo do ragdoll logo depois do step, ANTES dela alimentar o
+// PRÓXIMO step - impede a junta de sair de controle bem antes de precisar
+// de qualquer correção numérica cara.
+const RAGDOLL_MAX_LINEAR_VEL = 14;   // m/s
+const RAGDOLL_MAX_ANGULAR_VEL = 22;  // rad/s
+function clampRagdollVelocities(){
+  for(let i=0;i<rigidBodies.length;i++){
+    const body = rigidBodies[i].body;
+    const lv = body.getLinearVelocity();
+    const av = body.getAngularVelocity();
+    const lx=lv.x(), ly=lv.y(), lz=lv.z(), ax=av.x(), ay=av.y(), az=av.z();
+    if(!Number.isFinite(lx)||!Number.isFinite(ly)||!Number.isFinite(lz)||
+       !Number.isFinite(ax)||!Number.isFinite(ay)||!Number.isFinite(az)){
+      // já corrompido - zera de vez em vez de deixar realimentar o solver
+      body.setLinearVelocity(new Ammo.btVector3(0,0,0));
+      body.setAngularVelocity(new Ammo.btVector3(0,0,0));
+      continue;
+    }
+    const lSpeed = Math.sqrt(lx*lx+ly*ly+lz*lz);
+    if(lSpeed > RAGDOLL_MAX_LINEAR_VEL){
+      const s = RAGDOLL_MAX_LINEAR_VEL/lSpeed;
+      body.setLinearVelocity(new Ammo.btVector3(lx*s, ly*s, lz*s));
+    }
+    const aSpeed = Math.sqrt(ax*ax+ay*ay+az*az);
+    if(aSpeed > RAGDOLL_MAX_ANGULAR_VEL){
+      const s = RAGDOLL_MAX_ANGULAR_VEL/aSpeed;
+      body.setAngularVelocity(new Ammo.btVector3(ax*s, ay*s, az*s));
+    }
+  }
+}
+
 function stepPhysics(dt){
   if(!physicsReady) return;
 
@@ -1502,7 +1547,16 @@ function stepPhysics(dt){
   updateOpponentBalance(dt);      // PASSO 2: aplica força/torque de equilíbrio ANTES do step
   updateArmMuscles(dt);           // PASSO 5: idem, mas pro braço - roda em QUALQUER estado
 
-  physicsWorld.stepSimulation(dt, 10);
+  clampRagdollVelocities(); // trava velocidades absurdas ANTES do solver ter que lidar com elas
+
+  try{
+    physicsWorld.stepSimulation(dt, 10);
+  } catch(err){
+    console.warn('[física] stepSimulation falhou nesse frame - pulado pra não travar o jogo:', err);
+    return;
+  }
+
+  clampRagdollVelocities(); // e de novo depois - é a resposta DO solver a uma junta esticada que costuma disparar
 
   for(let i=0;i<rigidBodies.length;i++){
     const entry = rigidBodies[i];
@@ -4932,6 +4986,21 @@ function pulseHaptics(){
 
 /* ================================ LOOP PRINCIPAL ================================ */
 function render(){
+  try{
+    renderInner();
+  } catch(err){
+    // CORREÇÃO: qualquer erro não previsto aqui antes travava a aba de vez
+    // (WebXR chama render() de novo a cada frame, mas se ficasse lançando
+    // a mesma exceção sem parar em cima de um estado já quebrado, a
+    // sensação era de travamento total). Agora loga bem visível (inclusive
+    // no painel de status, já que em VR não dá pra abrir o console) e
+    // deixa o loop seguir tentando nos próximos frames.
+    console.error('[render] erro no frame, pulado:', err);
+    if(typeof setStatus==='function') setStatus('Erro interno (veja console): ' + (err && err.message ? err.message : err));
+  }
+}
+
+function renderInner(){
   const dt = Math.min(clock.getDelta(), 0.05);
 
   // MODO CELULAR: sem sessão XR, quem gira a câmera é o arraste do dedo/mouse
