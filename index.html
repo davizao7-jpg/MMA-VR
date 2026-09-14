@@ -1346,6 +1346,28 @@ function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kd
   const av = body.getAngularVelocity();
   const curAngVel = new THREE.Vector3(av.x(), av.y(), av.z());
 
+  // CORREÇÃO (ainda travava ao derrubar): quando o boneco físico é sacudido
+  // com muita força de uma vez (exatamente o que acontece numa queda ou
+  // tentando levantar), o Ammo.js/Bullet às vezes "explode" numericamente -
+  // velocidade ou posição viram NaN/Infinito. É um problema conhecido desse
+  // tipo de motor de física, sem relação com o vazamento de memória corrigido
+  // antes. O problema é que, sem essa checagem, a gente calculava uma
+  // força/torque em cima desse valor corrompido e devolvia ela pro PRÓPRIO
+  // Ammo.js (`applyCentralForce`/`applyTorque` logo abaixo) - alimentando o
+  // motor de física com lixo, frame após frame, sem nunca conseguir se
+  // recuperar sozinho (o corpo continua contaminado pra sempre) - trava a
+  // aba de vez, e é exatamente quando MUITA física acontece de uma vez
+  // (queda/levantar) que isso ficava mais provável de disparar. Se detectar
+  // isso, pula a força/torque desse corpo neste frame (em vez de realimentar
+  // o problema) - o corpo consegue assentar sozinho pela gravidade/atrito
+  // normal do Ammo, em vez de travar tudo.
+  if(!Number.isFinite(curPos.x)||!Number.isFinite(curPos.y)||!Number.isFinite(curPos.z)||
+     !Number.isFinite(curQuat.x)||!Number.isFinite(curQuat.y)||!Number.isFinite(curQuat.z)||!Number.isFinite(curQuat.w)||
+     !Number.isFinite(curVel.x)||!Number.isFinite(curVel.y)||!Number.isFinite(curVel.z)||
+     !Number.isFinite(curAngVel.x)||!Number.isFinite(curAngVel.y)||!Number.isFinite(curAngVel.z)){
+    return;
+  }
+
   if(kpPos > 0 || extraUpForce){
     const posErr = targetPos.clone().sub(curPos);
     const force = posErr.multiplyScalar(kpPos).sub(curVel.multiplyScalar(kdPos));
@@ -1489,8 +1511,23 @@ function stepPhysics(dt){
     ms.getWorldTransform(tmpTrans);
     const p = tmpTrans.getOrigin();
     const q = tmpTrans.getRotation();
-    entry.mesh.position.set(p.x(), p.y(), p.z());
-    entry.mesh.quaternion.set(q.x(), q.y(), q.z(), q.w());
+    const px=p.x(), py=p.y(), pz=p.z(), qx=q.x(), qy=q.y(), qz=q.z(), qw=q.w();
+    // CORREÇÃO (mesmo problema de física "explodindo" - ver comentário em
+    // applyBalanceSpring): se ESTE corpo específico já saiu com valor
+    // NaN/Infinito do Ammo (mesmo sem passar pela mola de equilíbrio - um
+    // braço/perna ligado por junta a um corpo contaminado também pode virar
+    // lixo), não escreve isso no mesh visual. Escrever NaN na cena faz
+    // qualquer cálculo de distância que use essa posição depois (soco,
+    // agarrão, cotovelada...) virar NaN também - comparações tipo `dist < X`
+    // com NaN nunca são verdadeiras, o que também pode deixar partes do jogo
+    // "travadas" sem nenhum erro aparecer no console. Só pula esse corpo
+    // neste frame (ele já não estava certo mesmo) e segue os outros.
+    if(!Number.isFinite(px)||!Number.isFinite(py)||!Number.isFinite(pz)||
+       !Number.isFinite(qx)||!Number.isFinite(qy)||!Number.isFinite(qz)||!Number.isFinite(qw)){
+      continue;
+    }
+    entry.mesh.position.set(px, py, pz);
+    entry.mesh.quaternion.set(qx, qy, qz, qw);
   }
 }
 
@@ -3862,7 +3899,7 @@ function releaseGrab(ci){
 // mais pesada (`RAGDOLL_MASS_BY_PART`) precisa de mais força/puxão real da
 // sua mão pra se mover na mesma velocidade que uma mais leve - é F=ma de
 // verdade, não um fator manual por parte.
-const GRAB_KP = 950, GRAB_KD = 55, GRAB_MAX_FORCE = 2200;
+const GRAB_KP = 950, GRAB_KD = 55, GRAB_MAX_FORCE = 2200, GRAB_MAX_TORQUE = 550;
 function applyGrabPointPull(ci){
   const g = grabState[ci];
   const part = g.ragdollKey && opp.ragdoll && opp.ragdoll[g.ragdollKey];
@@ -3888,6 +3925,25 @@ function applyGrabPointPull(ci){
   const handPos = ctrl.getWorldPosition(new THREE.Vector3());
   const force = handPos.sub(worldPoint).multiplyScalar(GRAB_KP).sub(pointVel.multiplyScalar(GRAB_KD));
   force.clampLength(0, GRAB_MAX_FORCE);
+
+  // CORREÇÃO (travava especificamente puxando a perna): `clampLength` acima só
+  // limita a FORÇA - mas o TORQUE de verdade que isso gera no corpo é força ×
+  // braço de alavanca (`rotatedOffset`, a distância do ponto agarrado até o
+  // CENTRO da perna). Segurar o tornozelo/joelho agarra bem mais longe do
+  // centro do que segurar o quadril/tronco direto - a MESMA força de 2200
+  // vira um torque bem maior ali. Um torque grande demais de repente é
+  // exatamente o tipo de coisa que faz o Ammo.js/Bullet "explodir"
+  // numericamente (NaN/infinito - ver comentário completo em
+  // `applyBalanceSpring`) - por isso era ao puxar a PERNA que travava, não ao
+  // segurar o quadril/tronco. Aqui a gente reduz a força (não o torque
+  // diretamente, o Ammo não deixa limitar isso separado) na proporção certa
+  // pra manter o torque resultante sempre dentro de um limite seguro, não
+  // importa quão longe do centro o ponto agarrado esteja.
+  const leverArm = rotatedOffset.length();
+  if(leverArm > 0.001){
+    const maxForceForLever = GRAB_MAX_TORQUE / leverArm;
+    if(maxForceForLever < force.length()) force.clampLength(0, maxForceForLever);
+  }
 
   body.activate(true);
   // reutilizáveis - ver CORREÇÃO em initPhysics (antes criava 2 btVector3 novos TODO frame, sem nunca liberar)
