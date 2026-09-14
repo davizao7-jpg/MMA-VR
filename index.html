@@ -1335,6 +1335,7 @@ const GETUP_MAX_TIME = 6.0;      // trava de segurança: física pode ter travad
 function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kdRot, extraUpForce, maxForce=BALANCE_MAX_FORCE, maxTorque=BALANCE_MAX_TORQUE){
   if(!body) return;
   const ms = body.getMotionState();
+  if(!ms) return; // CORREÇÃO: getMotionState() pode vir null se o corpo "explodiu" numericamente (mesmo caso já tratado em stepPhysics) - sem essa checagem, travava toda vez que isso acontecia durante o equilíbrio/levantar
   ms.getWorldTransform(tmpTrans);
   const origin = tmpTrans.getOrigin();
   const rot = tmpTrans.getRotation();
@@ -3926,8 +3927,9 @@ function tryGrab(ci){
     // que está segurando.
     const ragdollKey = GRAB_ID_TO_RAGDOLL_KEY[best.id];
     const part = ragdollKey && opp.ragdoll && opp.ragdoll[ragdollKey];
-    if(part && part.body){
-      part.body.getMotionState().getWorldTransform(tmpTrans);
+    const ms = part && part.body && part.body.getMotionState();
+    if(part && part.body && ms){
+      ms.getWorldTransform(tmpTrans);
       const o = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
       const bodyPos = new THREE.Vector3(o.x(), o.y(), o.z());
       const invBodyQuat = new THREE.Quaternion(-q.x(), -q.y(), -q.z(), q.w()); // conjugado = inverso (quat unitário)
@@ -3962,7 +3964,9 @@ function applyGrabPointPull(ci){
   if(!ctrl) return;
 
   const body = part.body;
-  body.getMotionState().getWorldTransform(tmpTrans);
+  const ms = body.getMotionState();
+  if(!ms) return; // CORREÇÃO: mesmo problema de getMotionState() null (ver applyBalanceSpring) - era isso que travava especificamente ao puxar a perna
+  ms.getWorldTransform(tmpTrans);
   const o = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
   const bodyPos = new THREE.Vector3(o.x(), o.y(), o.z());
   const bodyQuat = new THREE.Quaternion(q.x(), q.y(), q.z(), q.w());
@@ -4486,8 +4490,8 @@ function updateOpponentAI(dt, camXZ){
 
     const hip = opp.ragdoll && opp.ragdoll.hip;
     let dePe = false;
-    if(hip && hip.body){
-      const ms = hip.body.getMotionState();
+    const ms = hip && hip.body && hip.body.getMotionState();
+    if(hip && hip.body && ms){
       ms.getWorldTransform(tmpTrans);
       const alturaOk = tmpTrans.getOrigin().y() > BALANCE_HIP_HEIGHT - GETUP_HEIGHT_TOL;
 
