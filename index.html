@@ -583,6 +583,14 @@ let tmpTrans = null;       // btTransform reutilizável (evita criar objeto toda
 let tmpKinTrans = null;    // btTransform reutilizável pra escrever pose cinemática do ragdoll
 let tmpImpulseVec = null;  // btVector3 reutilizável pro impulso de soco
 let tmpRelVec = null;      // btVector3 reutilizável pro ponto de aplicação (offset do centro de massa)
+// CORREÇÃO (travava ao derrubar - vazamento de memória do Ammo.js): reutilizáveis
+// pra força/torque do "músculo" de equilíbrio e pro puxão do agarrão, que antes
+// criavam um btVector3 novo TODO FRAME sem nunca liberar (ver comentário
+// completo perto de onde são inicializados, em initPhysics).
+let tmpForceVec = null;
+let tmpTorqueVec = null;
+let tmpGrabForceVec = null;
+let tmpGrabRelVec = null;
 const tmpVec3 = new THREE.Vector3();       // reutilizável pra ler posição mundial dos meshes do opp
 const tmpQuat = new THREE.Quaternion();    // reutilizável pra ler rotação mundial dos meshes do opp
 const tmpImpulsePivot = new THREE.Vector3(); // reutilizável pra centro de massa na hora do impulso
@@ -630,6 +638,25 @@ const tmpElbowDirToHand = new THREE.Vector3();
 const tmpElbowRotAxis = new THREE.Vector3();
 const tmpElbowBendHint = new THREE.Vector3();
 const playerArms = [null, null];
+
+// CORREÇÃO (cotovelo girando junto com o pulso): o Quest só reporta a POSIÇÃO
+// física do controle, não a do seu punho - e o controle fica alguns
+// centímetros à frente/abaixo do punho de verdade. Isso significa que só GIRAR
+// o punho (sem mover o braço no espaço) já desloca a posição reportada do
+// controle (ele "varre" um arco em volta do punho, que é o eixo real do giro)
+// - e como o cotovelo é calculado a partir dessa posição (`solveElbowIK`), ele
+// "seguia" esse giro como se você tivesse movido a mão de verdade. Pra
+// resolver, subtraímos do controle um deslocamento FIXO (`WRIST_OFFSET_LOCAL`,
+// a distância aproximada do controle até o punho) rotacionado pela orientação
+// ATUAL do controle - geometricamente, isso "desfaz" o arco: girar o punho no
+// lugar já não move mais o ponto resultante, só mover o braço de verdade move.
+// A luva continua acompanhando o controle inteiro (posição+rotação) pra não
+// perder a naturalidade visual - só o ALVO usado pelo IK do braço/cotovelo é
+// que passa a usar esse punho estabilizado.
+const WRIST_OFFSET_LOCAL = new THREE.Vector3(0, -0.02, 0.09); // controle -> punho, no espaço local do controle
+const tmpQuatCtrl = new THREE.Quaternion();
+const tmpVec3WristOffset = new THREE.Vector3();
+const tmpVec3Wrist = new THREE.Vector3();
 
 // CORREÇÃO: mesmo problema de ordem - `opponentRagdollBuilt` é lida dentro de
 // maybeBuildOpponentRagdoll(), que pode rodar de dentro de init() (via
@@ -747,6 +774,27 @@ function initPhysics(){
   tmpKinTrans = new Ammo.btTransform(); // reutilizável pra escrever a pose cinemática do ragdoll
   tmpImpulseVec = new Ammo.btVector3(0,0,0);
   tmpRelVec = new Ammo.btVector3(0,0,0);
+  // CORREÇÃO (travava ao tentar derrubar): `applyBalanceSpring` (equilíbrio -
+  // roda todo frame pros braços, e pro quadril/tronco sempre que ele está em
+  // pé/atordoado/levantando) e `applyGrabPointPull` (o puxão do agarrão,
+  // rodando o tempo todo enquanto o gatilho está segurado) criavam um
+  // `new Ammo.btVector3(...)` NOVO a cada frame pra cada força/torque. Esses
+  // objetos são alocados no heap do Ammo.js (WebAssembly) - diferente de um
+  // objeto JS comum, o coletor de lixo do navegador NÃO libera essa memória
+  // sozinho; sem destruir cada um explicitamente, ela só cresce, frame após
+  // frame, pra sempre. Isso ia consumindo memória silenciosamente desde o
+  // início da luta (os braços já criam 2 desses por frame o tempo todo), e ao
+  // tentar derrubar/segurar o adversário - quando MUITA física roda de uma vez
+  // (queda, levantar, puxão contínuo do agarrão) - o consumo acelerava rápido
+  // o bastante pra travar a aba. A correção: reaproveitar vetores fixos abaixo
+  // (só chamar `.setValue(...)` neles a cada frame) em vez de criar um novo
+  // sempre - exatamente o mesmo padrão já usado em `tmpImpulseVec`/`tmpRelVec`
+  // acima, só que agora também nos pontos "quentes" (rodam todo frame de
+  // física) que ainda não seguiam essa regra.
+  tmpForceVec = new Ammo.btVector3(0,0,0);
+  tmpTorqueVec = new Ammo.btVector3(0,0,0);
+  tmpGrabForceVec = new Ammo.btVector3(0,0,0);
+  tmpGrabRelVec = new Ammo.btVector3(0,0,0);
 
   buildPhysicsFloor();
   buildBoundaryColliders(window.BOUNDARY_POLY); // paredes do limite padrão (octógono) - passo 6
@@ -1303,7 +1351,8 @@ function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kd
     const force = posErr.multiplyScalar(kpPos).sub(curVel.multiplyScalar(kdPos));
     if(extraUpForce) force.y += extraUpForce; // contrabalança a gravidade
     force.clampLength(0, maxForce);
-    body.applyCentralForce(new Ammo.btVector3(force.x, force.y, force.z));
+    tmpForceVec.setValue(force.x, force.y, force.z); // reutilizável - ver CORREÇÃO em initPhysics
+    body.applyCentralForce(tmpForceVec);
   }
 
   // conjugado manual (quaternion unitário: inverso == conjugado) - evita
@@ -1318,7 +1367,8 @@ function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kd
 
   const torque = axis.multiplyScalar(angle*kpRot).sub(curAngVel.multiplyScalar(kdRot));
   torque.clampLength(0, maxTorque);
-  body.applyTorque(new Ammo.btVector3(torque.x, torque.y, torque.z));
+  tmpTorqueVec.setValue(torque.x, torque.y, torque.z); // reutilizável - ver CORREÇÃO em initPhysics
+  body.applyTorque(tmpTorqueVec);
 }
 
 // Chamada todo frame de física (dentro de `stepPhysics`, antes do step).
@@ -2654,6 +2704,12 @@ function updatePlayerArms(dt){
     const ctrl = ci===0 ? controller0 : controller1;
     if(!arm || !ctrl) continue;
     ctrl.getWorldPosition(tmpVec3Hand);
+    ctrl.getWorldQuaternion(tmpQuatCtrl);
+
+    // punho estabilizado (ver comentário de CORREÇÃO perto de
+    // WRIST_OFFSET_LOCAL) - usado só pro IK do braço/cotovelo, nunca pra luva.
+    tmpVec3WristOffset.copy(WRIST_OFFSET_LOCAL).applyQuaternion(tmpQuatCtrl);
+    tmpVec3Wrist.copy(tmpVec3Hand).sub(tmpVec3WristOffset);
 
     // ombro estimado: abaixo e pro lado da cabeça, girando junto com ela
     tmpVec3Shoulder.set(0.19*arm.sign, -0.28, 0.02).applyQuaternion(tmpQuatYaw).add(tmpVec3Head);
@@ -2661,7 +2717,9 @@ function updatePlayerArms(dt){
     // cotovelo real: IK de 2 ossos com comprimento fixo (ver solveElbowIK) -
     // fica onde o cotovelo de verdade estaria, no tamanho certo, em vez de
     // encolher junto quando a mão está perto do ombro (guarda, por exemplo).
-    solveElbowIK(tmpVec3Shoulder, tmpVec3Hand, arm.sign, tmpQuatYaw, arm.prevElbowDir, tmpVec3Mid);
+    // Usa o punho ESTABILIZADO (não a posição bruta do controle) como alvo,
+    // pra girar só o pulso não mexer mais no cotovelo.
+    solveElbowIK(tmpVec3Shoulder, tmpVec3Wrist, arm.sign, tmpQuatYaw, arm.prevElbowDir, tmpVec3Mid);
 
     // ETAPA CORREÇÃO: suaviza a posição visual do cotovelo (filtro passa-baixa
     // no tempo) em vez de saltar direto pra solução da IK a cada frame - isso
@@ -2916,9 +2974,16 @@ function buildOpponent(){
 
   // ETAPA VISUAL: pelo esparso no peito - casca fina e transparente sobre o
   // esterno (entre os peitorais), mesma técnica do stubble no queixo.
+  // CORREÇÃO (pelo flutuando na frente do corpo): o tronco (`torsoProfile`
+  // acima) é curvo - na altura do peito (y=0.02) a superfície de verdade tem
+  // raio ~0.1945, bem menor que o z=0.202 antigo (quase 6mm de folga, e essa
+  // folga ainda crescia mais nas bordas por causa do plano ser RETO sobre uma
+  // superfície redonda). Encostado direto no raio real da superfície (nessa
+  // mesma altura) + um pouco menor (pra sobrar menos borda "boiando" longe do
+  // corpo nas pontas), fica colado na pele em vez de flutuar solto na frente.
   const chestHairMat = new THREE.MeshBasicMaterial({map:createChestHairTexture(), transparent:true, depthWrite:false});
-  const chestHair = new THREE.Mesh(new THREE.PlaneGeometry(0.16,0.20), chestHairMat);
-  chestHair.position.set(0,0.02,0.202);
+  const chestHair = new THREE.Mesh(new THREE.PlaneGeometry(0.11,0.15), chestHairMat);
+  chestHair.position.set(0,0.02,0.196);
   opp.torsoMesh.add(chestHair);
 
   // ETAPA VISUAL: cicatriz no tronco - corte antigo cicatrizado nas costelas,
@@ -3825,7 +3890,10 @@ function applyGrabPointPull(ci){
   force.clampLength(0, GRAB_MAX_FORCE);
 
   body.activate(true);
-  body.applyForce(new Ammo.btVector3(force.x, force.y, force.z), new Ammo.btVector3(rotatedOffset.x, rotatedOffset.y, rotatedOffset.z));
+  // reutilizáveis - ver CORREÇÃO em initPhysics (antes criava 2 btVector3 novos TODO frame, sem nunca liberar)
+  tmpGrabForceVec.setValue(force.x, force.y, force.z);
+  tmpGrabRelVec.setValue(rotatedOffset.x, rotatedOffset.y, rotatedOffset.z);
+  body.applyForce(tmpGrabForceVec, tmpGrabRelVec);
 }
 
 // Processa os agarrões ativos todo frame. A força física real (puxão no
