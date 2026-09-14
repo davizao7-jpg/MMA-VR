@@ -4989,18 +4989,48 @@ function pulseHaptics(){
 }
 
 /* ================================ LOOP PRINCIPAL ================================ */
+// CORREÇÃO (raiz do "trava tudo" ao puxar a perna / no knockdown): antes só
+// existia UM try/catch em volta de renderInner() inteiro. Isso já evitava o
+// crash total do WebXR, mas tinha um problema sério: se o erro acontecia
+// dentro de, por exemplo, handleGrabs (puxar a perna) ou updateOpponentAI
+// (knockdown), o catch pegava o erro, MAS `stepPhysics` e `renderer.render`
+// daquele frame nunca chegavam a rodar - eles vêm DEPOIS na função. No
+// próximo frame o jogo tentava tudo de novo do zero, caía no mesmo erro de
+// novo, e de novo nunca chegava em física/render. Visualmente isso é
+// idêntico a travar de vez, mesmo o jogo "tentando" a 90fps por baixo.
+//
+// `safeFrameCall` isola CADA sistema no seu próprio try/catch, por dentro do
+// loop (não só o loop inteiro). Um erro num sistema (ex.: agarrão) não
+// impede mais os outros (física, render) de rodarem naquele mesmo frame -
+// o jogo passa a "tropeçar" (perde só aquele sistema por um frame) em vez de
+// congelar. Também guarda a stack trace completa (arquivo/linha), não só
+// `err.message`, e mostra ela no painel de status - essencial em VR, onde
+// não dá pra abrir o console do navegador.
+let lastFrameErrors = {}; // por sistema: evita spammar o mesmo erro toda hora, guarda só o mais recente
+function safeFrameCall(label, fn){
+  try{
+    fn();
+    return true;
+  } catch(err){
+    const stack = (err && err.stack) ? err.stack : String(err);
+    lastFrameErrors[label] = stack;
+    console.error('[' + label + '] erro no frame, sistema pulado:', err);
+    if(typeof setStatus==='function'){
+      setStatus('Erro em ' + label + ': ' + stack.split('\n').slice(0,3).join(' | '));
+    }
+    return false;
+  }
+}
+
 function render(){
   try{
     renderInner();
   } catch(err){
-    // CORREÇÃO: qualquer erro não previsto aqui antes travava a aba de vez
-    // (WebXR chama render() de novo a cada frame, mas se ficasse lançando
-    // a mesma exceção sem parar em cima de um estado já quebrado, a
-    // sensação era de travamento total). Agora loga bem visível (inclusive
-    // no painel de status, já que em VR não dá pra abrir o console) e
-    // deixa o loop seguir tentando nos próximos frames.
+    // rede de segurança final: qualquer coisa fora dos sistemas já isolados
+    // abaixo (ex.: erro no próprio renderer.render) cai aqui.
+    const stack = (err && err.stack) ? err.stack : String(err);
     console.error('[render] erro no frame, pulado:', err);
-    if(typeof setStatus==='function') setStatus('Erro interno (veja console): ' + (err && err.message ? err.message : err));
+    if(typeof setStatus==='function') setStatus('Erro interno: ' + stack.split('\n').slice(0,3).join(' | '));
   }
 }
 
@@ -5019,21 +5049,29 @@ function renderInner(){
     camVel.copy(camWorld).sub(prevCamPos).divideScalar(Math.max(dt,0.0001));
     prevCamPos.copy(camWorld);
 
-    updatePlayerArms(dt); // atualiza a posição do cotovelo ANTES de checar cotoveladas
-    handleController(0, controller0, dt);
-    handleController(1, controller1, dt);
-    handleElbowStrike(0, dt);
-    handleElbowStrike(1, dt);
-    handleGrabs(dt);
-    handleChoke(dt);
-    handleBellTouch();
-    updatePlayerGroundState(dt); // ETAPA 9: precisa rodar antes da IA, que reage a playerGroundState
+    // CORREÇÃO: cada sistema isolado no seu try/catch (ver safeFrameCall
+    // acima). Antes, um erro em QUALQUER um destes (ex.: handleGrabs ao
+    // puxar a perna, ou updateOpponentAI no knockdown) pulava direto pro
+    // catch geral do render() e `stepPhysics`/`renderer.render` daquele
+    // frame nunca rodavam - de novo no frame seguinte, sempre o mesmo erro,
+    // nunca chegando em física/render. Agora um sistema quebrado é pulado
+    // sozinho; os outros (inclusive física e o render final) continuam
+    // rodando normalmente no mesmo frame.
+    safeFrameCall('updatePlayerArms', ()=>updatePlayerArms(dt)); // atualiza a posição do cotovelo ANTES de checar cotoveladas
+    safeFrameCall('handleController0', ()=>handleController(0, controller0, dt));
+    safeFrameCall('handleController1', ()=>handleController(1, controller1, dt));
+    safeFrameCall('handleElbowStrike0', ()=>handleElbowStrike(0, dt));
+    safeFrameCall('handleElbowStrike1', ()=>handleElbowStrike(1, dt));
+    safeFrameCall('handleGrabs', ()=>handleGrabs(dt));
+    safeFrameCall('handleChoke', ()=>handleChoke(dt));
+    safeFrameCall('handleBellTouch', ()=>handleBellTouch());
+    safeFrameCall('updatePlayerGroundState', ()=>updatePlayerGroundState(dt)); // ETAPA 9: precisa rodar antes da IA, que reage a playerGroundState
 
-    updateOpponentAI(dt, camWorld);
+    safeFrameCall('updateOpponentAI', ()=>updateOpponentAI(dt, camWorld));
   }
 
-  updateParticles(dt);
-  stepPhysics(dt);
+  safeFrameCall('updateParticles', ()=>updateParticles(dt));
+  safeFrameCall('stepPhysics', ()=>stepPhysics(dt));
 
   if(dazedFlash>0){
     dazedFlash = Math.max(0, dazedFlash-dt*1.4);
