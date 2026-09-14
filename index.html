@@ -642,6 +642,16 @@ let opponentRagdollBuilt = false;
 let arenaSpotlights = [], arenaFixtures = [], arenaRimLight = null, arenaAmbient = null, arenaHemi = null;
 let arenaMatMaterial = null, arenaPadMat = null, arenaStandMaterial = null;
 
+// CORREÇÃO: mesmo problema de ordem das constantes lá em cima - PLAYER_SKIN_COLOR
+// é lida dentro de getPlayerSkinMat(), chamada por buildControllers() (dentro de
+// init()). Antes ela estava declarada lá embaixo, perto de buildControllers(),
+// bem depois do ponto em que init() já tinha sido chamada - disparava "Cannot
+// access 'PLAYER_SKIN_COLOR' before initialization" e travava o script logo no
+// início, antes do menu de cenário/estilo e do botão de VR serem configurados
+// (por isso nenhum clique respondia, nem no cenário, nem em nada mais).
+const PLAYER_SKIN_COLOR = 0x8a5a3a;
+let playerSkinMat = null;
+
 init();
 
 function init(){
@@ -2513,9 +2523,8 @@ function buildMMAGlove(scale, padColor, skinMaterial){
 // um toque de clearcoat (brilho/suor sob luz) - só que num tom MORENO mais
 // escurecido, como pedido. Um material só, reaproveitado na luva inteira E
 // no braço/cotovelo (`buildPlayerArms`), pra pele ficar igual e sem costura
-// entre mão e braço.
-const PLAYER_SKIN_COLOR = 0x8a5a3a;
-let playerSkinMat = null;
+// entre mão e braço. (PLAYER_SKIN_COLOR/playerSkinMat agora declarados lá em
+// cima, antes de init() - ver comentário de CORREÇÃO perto de `init();`.)
 function getPlayerSkinMat(){
   if(!playerSkinMat){
     playerSkinMat = new THREE.MeshPhysicalMaterial({
