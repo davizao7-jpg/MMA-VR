@@ -54,6 +54,11 @@
   .styleGrid{
     display:grid;grid-template-columns:repeat(2,minmax(200px,260px));gap:16px;max-width:600px;width:100%;
   }
+  /* grid do menu de cenário - próprio (não o diffGrid, que é sempre 3 colunas
+     pra estilo/dificuldade) porque agora são 4 cards, melhor em 2 colunas */
+  .scenarioGrid{
+    display:grid;grid-template-columns:repeat(2,minmax(200px,260px));gap:16px;max-width:600px;width:100%;
+  }
   .styleCard{
     background:#1a1010;border:2px solid #4a2222;border-radius:10px;color:#eee;
     padding:16px;text-align:left;cursor:pointer;font-family:inherit;
@@ -91,7 +96,7 @@
 <div id="scenarioMenu">
   <h1>ESCOLHA O CENÁRIO</h1>
   <p class="styleSub">Muda o visual do octógono e da iluminação - dá pra trocar depois, é só recarregar a página.</p>
-  <div class="diffGrid">
+  <div class="scenarioGrid">
     <button class="styleCard" data-scenario="gym">
       <span class="styleName">GINÁSIO CLÁSSICO</span>
       <span class="styleDesc">Luz branca e neutra, arquibancada clara - o visual padrão de treino.</span>
@@ -103,6 +108,10 @@
     <button class="styleCard" data-scenario="tournament">
       <span class="styleName">TORNEIO PROFISSIONAL</span>
       <span class="styleDesc">Octógono azul de campeonato, iluminação fria e mais intensa.</span>
+    </button>
+    <button class="styleCard" data-scenario="garden">
+      <span class="styleName">CAMPO FLORIDO</span>
+      <span class="styleDesc">Ao ar livre: grama e flores no chão, rio serpenteando ao fundo, céu aberto e sol - luz quente e natural.</span>
     </button>
   </div>
 </div>
@@ -227,8 +236,7 @@ const ELBOW_RADIUS_BONUS = 0.03;  // cotovelo é menor que a luva - raio de acer
 // de "atordoado" igual pra qualquer soco). Ainda sem HUD própria; a ETAPA 4
 // (visão turva/knockdown do jogador) é quem vai reagir visualmente a isso.
 // AJUSTE: vida dobrada (100 -> 200) - o jogador estava morrendo rápido demais.
-// AJUSTE 2: subida pra 600 a pedido do usuário.
-let playerHealth = 600, playerMaxHealth = 600;
+let playerHealth = 200, playerMaxHealth = 200;
 
 // ETAPA 2: os 3 padrões de soco do inimigo, cada um com sua duração de
 // animação, dano e o "jeito" de esquivar. `dodgeMode` diz qual checagem de
@@ -289,7 +297,13 @@ const CHOKE_TIME_NEEDED = 4.2;    // segundos segurando o pescoço
 //    mesmo alvo/lado várias vezes seguidas, a guarda daquele ponto recebe um
 //    bônus temporário (ele "aprendeu" o padrão) - some assim que o jogador varia
 const GUARD_HEAD_BASE = 0.5;        // proteção de cada lado do rosto, guarda em pé normal
-const GUARD_BELLY_BASE = 0.3;       // barriga fica mais exposta por padrão (guarda alta protege o rosto)
+// AJUSTE (base/idle): antes a barriga já começava bem exposta (0.3), o que
+// deixava a guarda parada numa posição "meio aberta" o tempo todo, sem ler
+// como um lutador de verdade guardando o rosto. Baixado pra deixar a pose de
+// descanso claramente puxada pra cima - luvas perto do queixo/rosto por
+// padrão, só descendo de verdade quando a barriga realmente apanha (ver
+// reactGuard/registerBodyHit, que ainda sobem esse valor normalmente).
+const GUARD_BELLY_BASE = 0.12;      // barriga menos exposta por padrão - guarda de base já protege o rosto
 const GUARD_REACT_STEP = 0.22;      // o quanto CADA acerto sofrido empurra a guarda
 const GUARD_DECAY_RATE = 0.35;      // por segundo, a guarda relaxa de volta pro valor base
 const GUARD_MAX = 0.82;             // guarda nunca vira escudo impenetrável
@@ -398,29 +412,46 @@ let pendingStyleKey = null; // estilo já escolhido na 1ª tela, esperando a dif
 // applyArenaScenario(), que guarda as referências criadas em buildLights()/
 // buildArena() (arenaSpotlights, arenaFixtures, arenaRimLight, etc.).
 const ARENA_SCENARIOS = {
+  // ETAPA VISUAL: os 3 cenários originais ganharam mais contraste (spot mais
+  // forte, ambiente/hemisfério um pouco mais baixos) - a luz direcional se
+  // destaca mais da luz "chapada" de preenchimento, dando mais volume real
+  // aos corpos em vez do visual mais achatado de antes.
   gym: {
     label:'GINÁSIO CLÁSSICO',
-    background:0xf2f2f0, fogDensity:0.035,
+    background:0xf2f2f0, fogDensity:0.032,
     matTint:0xffffff, padTint:0xf5f5f2, standTint:0xffffff,
-    spotColor:0xfff2dd, spotIntensity:2.6,
-    rimColor:0xcfe0ff, rimIntensity:0.5,
-    ambientIntensity:0.55, hemiIntensity:0.55,
+    spotColor:0xfff2dd, spotIntensity:2.85,
+    rimColor:0xcfe0ff, rimIntensity:0.55,
+    ambientIntensity:0.5, hemiIntensity:0.58,
   },
   night: {
     label:'ARENA NOTURNA',
     background:0x08080d, fogDensity:0.05,
     matTint:0x7d88a8, padTint:0x24242e, standTint:0x2b2b35,
-    spotColor:0xbcd2ff, spotIntensity:3.0,
-    rimColor:0xff4dd2, rimIntensity:0.9,
-    ambientIntensity:0.22, hemiIntensity:0.28,
+    spotColor:0xbcd2ff, spotIntensity:3.15,
+    rimColor:0xff4dd2, rimIntensity:1.1,
+    ambientIntensity:0.2, hemiIntensity:0.26,
   },
   tournament: {
     label:'TORNEIO PROFISSIONAL',
-    background:0x0d1622, fogDensity:0.03,
+    background:0x0d1622, fogDensity:0.028,
     matTint:0x4a7db3, padTint:0x1c3a5e, standTint:0x24344a,
-    spotColor:0xffffff, spotIntensity:3.2,
-    rimColor:0x4fd1ff, rimIntensity:0.7,
-    ambientIntensity:0.4, hemiIntensity:0.45,
+    spotColor:0xffffff, spotIntensity:3.35,
+    rimColor:0x4fd1ff, rimIntensity:0.85,
+    ambientIntensity:0.38, hemiIntensity:0.44,
+  },
+  // NOVO: cenário ao ar livre - grama/flores no chão (ver __gardenGround em
+  // buildArena), rio + colinas + sol pintados no pano de fundo (ver
+  // createGardenBackdropTexture) no lugar da arquibancada, céu aberto e luz
+  // quente de sol (ambiente/hemisfério bem mais altos que os outros 3, pouca
+  // neblina - sensação de dia claro, não de ginásio fechado).
+  garden: {
+    label:'CAMPO FLORIDO',
+    background:0xbfe3f5, fogDensity:0.012,
+    matTint:0xfff6df, padTint:0x6b8f3f, standTint:0xffffff,
+    spotColor:0xfff2c8, spotIntensity:2.2,
+    rimColor:0xfff0c0, rimIntensity:0.6,
+    ambientIntensity:0.78, hemiIntensity:0.88,
   },
 };
 let currentScenarioKey = 'gym';
@@ -439,30 +470,6 @@ const GROUND_DRAG_FACTOR = 0.55;   // o quanto ele se desloca no chão quando vo
 const GETUP_RATE = 0.19;           // progresso de "levantar" por segundo, sem ninguém segurando
 const GETUP_RATE_PINNED = 0.02;    // progresso de "levantar" por segundo, se você tiver ele agarrado
 const FALL_GRAVITY = 9.8;
-
-// NOVO: levantar biomecânico de verdade, em fases - substitui o slerp único
-// de 0->100 que existia antes. `GETUP_DURATION` é bem mais longo (o corpo
-// pesa, ele tem que se organizar) e é dividido em 3 fases pelas frações
-// abaixo: 0..GETUP_PLANT_T = plantar a mão no chão; GETUP_PLANT_T..GETUP_PUSH_T
-// = empurrar com o braço + quadril (a fase mais pesada/instável, tronco bem
-// inclinado pra frente); GETUP_PUSH_T..1 = terminar de esticar o corpo até
-// ficar de pé. Ver o ramo 'gettingUp' de `updateOpponentAI`.
-const GETUP_DURATION = 1.75;
-const GETUP_PLANT_T = 0.30;
-const GETUP_PUSH_T  = 0.72;
-const GETUP_WOBBLE_AMOUNT = 0.10;   // cambaleio de equilíbrio durante o empurrão (fase mais instável)
-const GETUP_INTERRUPT_PENALTY = 0.4; // quanto de getUpProgress ele perde ao ser derrubado de volta no meio do levantar
-
-// NOVO: "rolar pra longe" - a ÚNICA forma de impedir isso é agarrar ele ou
-// deitar peso em cima (ver ramo 'down' de updateOpponentAI); sem nenhum dos
-// dois, ele usa o tempo no chão pra tentar ganhar espaço de verdade (impulso
-// físico real no ragdoll, não um deslizar cosmético) antes de se comprometer
-// a levantar. Só rola enquanto ainda não decidiu ficar de pé de vez.
-const ROLL_AWAY_COOLDOWN_MIN = 1.1;
-const ROLL_AWAY_COOLDOWN_MAX = 2.3;
-const ROLL_AWAY_IMPULSE = 3.2;       // impulso do rolamento em si (quadril)
-const ROLL_AWAY_SPIN_IMPULSE = 1.6;  // impulso fora do centro -> vira giro real de "rolar", não só escorregar reto
-const ROLL_AWAY_MAX_PROGRESS = 0.55; // acima disso ele já está empenhado em levantar e para de fugir
 
 // PASSO 4: arraste no chão vira força real sobre o corpo físico agarrado
 // (perna ou tronco), em vez de mover `opp.root.position` direto. É um valor
@@ -540,33 +547,27 @@ const MOUNT_WEIGHT_MULT = 0.4;        // multiplica (reduz) a taxa de "levantar"
 let playerNeedsToLieDown = false;
 
 let bloodTex = null;
-let bloodDripTex = null;
 const activeParticles = [];
-const activeDrips = [];
-const bloodDecalCap = 70;
 
-// ETAPA 8 (realismo): mancha de sangue progressiva - decalques perto uns dos
-// outros se reforçam (ficam mais opacos e um pouco maiores) em vez de só
-// empilhar decalques soltos e aleatórios. Começa bem fraco (quase
-// transparente) e só fica "sujo de vez" depois de vários acertos na mesma
-// região.
-const BLOOD_STAIN_RADIUS = 0.055;       // distância (espaço local do mesh) pra considerar "mesmo lugar"
-const BLOOD_DECAL_START_OPACITY = 0.36; // opacidade de um decalque novo (sem reforço nenhum ainda)
-const BLOOD_DECAL_OPACITY_STEP = 0.22;  // quanto cada acerto próximo reforça os decalques já ali
-const BLOOD_DECAL_MAX_OPACITY = 1.0;
-const BLOOD_DECAL_GROW_STEP = 1.12;     // decalques já ali crescem um pouco a cada reforço (mancha se espalha)
-const BLOOD_DECAL_MAX_SCALE = 2.2;      // limite de quanto um decalque pode crescer com reforços
-
-// ETAPA 8 (realismo): sangue ESCORRENDO pela pele de verdade - uma faixa fina
-// e comprida (ver buildBloodDripTexture), ancorada no ferimento, que cresce
-// devagar pra baixo (updateBloodDrips) em vez de só bolinha caindo. Só nasce
-// quando a mesma região já apanhou mais de uma vez (ver spawnBloodDecal) -
-// simula o corte "abrindo" de verdade depois de já estar machucado ali.
-const BLOOD_DRIP_WIDTH = 0.026;
-const BLOOD_DRIP_BASE_HEIGHT = 0.05;
-const BLOOD_DRIP_GROW_SPEED_MIN = 0.045; // metros/segundo que a ponta escorre
-const BLOOD_DRIP_GROW_SPEED_MAX = 0.09;
-const BLOOD_DRIP_CAP = 5; // no máximo essa quantidade escorrendo por parte do corpo (cabeça/tronco)
+// ETAPA 9 (realismo total): o sangue agora é PINTADO de verdade na própria
+// pele do adversário (cor por vértice na geometria da cabeça/tronco), em vez
+// de placas/planos "grudados" por cima (que pareciam bolinhas flutuando).
+// Cada malha (opp.head / opp.torsoMesh) ganha:
+//   - bloodDamage: Float32Array com o quanto cada vértice já está "sujo" (0..1)
+//   - bloodNoise:  Float32Array com um ruído FIXO por vértice, usado pra
+//                  desenhar borda irregular (mancha real, não círculo perfeito)
+//                  e respingos soltos ao redor do ferimento.
+// A cor de cada vértice é a pele normal (branco = sem tingimento, o material
+// usa vertexColors multiplicando a textura de pele) misturada com vermelho
+// conforme bloodDamage cresce - por isso a pele "vira" sangue de verdade,
+// acompanhando a curvatura do corpo, sem nada flutuando por cima.
+const BLOOD_PAINT_RADIUS = 0.075;     // raio padrão (espaço local do mesh) de uma mancha nova
+const BLOOD_COLOR_WET = new THREE.Color(0x8a0000);  // sangue "fresco"
+const BLOOD_COLOR_DRY = new THREE.Color(0x3d0000);  // sangue mais seco/escuro (acumula com mais acertos)
+const activeBloodDrips = []; // fios de sangue escorrendo - crescem pintando a pele pra baixo aos poucos (ver updateBloodDrips)
+// ETAPA 10: soco fraco demais (t abaixo disso) não solta nem saliva - só um
+// soco realmente EFETIVO (e não bloqueado) produz qualquer líquido.
+const EFFECTIVE_HIT_T_MIN = 0.16;
 
 let statusPanel, statusCtx, statusTex;
 let bell;
@@ -586,6 +587,12 @@ const tmpVec3 = new THREE.Vector3();       // reutilizável pra ler posição mu
 const tmpQuat = new THREE.Quaternion();    // reutilizável pra ler rotação mundial dos meshes do opp
 const tmpImpulsePivot = new THREE.Vector3(); // reutilizável pra centro de massa na hora do impulso
 const tmpVec3B = new THREE.Vector3();        // reutilizável (posição do quadril na hora de assentar a queda)
+// PASSO 5: reutilizáveis pro "músculo" do ombro (ver updateArmMuscles) -
+// evita criar Quaternion/Vector3 novo pra cada braço, todo frame de física.
+const tmpArmTorsoQuat = new THREE.Quaternion();
+const tmpArmLocalQuat = new THREE.Quaternion();
+const tmpArmTargetQuat = new THREE.Quaternion();
+const tmpArmDummyPos = new THREE.Vector3(); // posição-alvo não usada (kpPos=0 na mola do braço), só pra satisfazer a assinatura
 const rigidBodies = [];    // { mesh: THREE.Mesh, body: btRigidBody } - tudo que precisa
                             // sincronizar posição/rotação do Ammo pro Three.js a cada frame
 let testBallMesh = null;
@@ -665,7 +672,6 @@ function init(){
   buildStatusPanel();
   buildBell();
   buildBloodTexture();
-  buildBloodDripTexture();
 
   buildControllers();
   buildPlayerArms();
@@ -849,49 +855,50 @@ function buildTestBall(){
 }
 
 /* ---------------------------------------------------------------------
-   RAGDOLL DO ADVERSÁRIO - passo 1 (consolidado): um único boneco físico,
-   já acoplado no `opp` de verdade (quadril, tronco, cabeça, duas pernas,
-   ligados por juntas cone-twist). Por enquanto ele fica em modo
-   CINEMÁTICO: os corpos físicos apenas SEGUEM a pose dos meshes visuais
-   (que continuam 100% controlados pelo sistema manual de sempre -
-   `updateOpponentAI`, `stability`, `fallVel` etc.). Nada muda no que já
-   funciona hoje. As juntas já ficam montadas e prontas: no passo da
-   queda (`startPhysicsFall`), a gente troca os corpos de cinemático pra
-   dinâmico (`releaseOpponentRagdoll()`) e aí sim a física assume de
-   verdade, soltando o ragdoll.
+   RAGDOLL DO ADVERSÁRIO - passo 1 do "ragdoll ativo": um único boneco
+   físico (quadril, tronco, cabeça, duas pernas, dois braços, ligados por
+   juntas cone-twist), DINÂMICO DESDE O INÍCIO DA LUTA - não existe mais
+   modo cinemático nenhum aqui. Isso significa que, por enquanto (antes do
+   passo 2, que ainda vai dar "músculos"/equilíbrio pra ele), o adversário
+   vai simplesmente cair mole assim que a luta começa: é esperado, é só
+   pra confirmar que a física real está no controle o tempo todo. Os
+   meshes visuais saem da hierarquia manual (`opp.root`/`hip`/`torsoPivot`
+   etc.) e passam a ser 100% comandados pela física (igual antes só
+   acontecia depois de uma queda).
    --------------------------------------------------------------------- */
 
+// Massa aproximada (kg) de cada parte do ragdoll - usada tanto na criação
+// dos corpos quanto (no futuro passo 3) pra calibrar a força necessária
+// pra puxar cada parte pela mão: quadril/tronco pesam mais, braço pesa
+// menos, então o mesmo "puxão" desloca mais um braço que uma perna.
+const RAGDOLL_MASS_BY_PART = {hip:9, torso:7, head:4, legL:3, legR:3, armL:2, armR:2};
+
 // Cria só o corpo físico (sem mesh - o visual já existe, é o mesh do `opp`).
-// `kinematic=true`: corpo com massa 0 e flag CF_KINEMATIC_OBJECT, ou seja,
-// não reage a força nenhuma - a gente é quem escreve a posição/rotação dele
-// todo frame (a partir do mesh visual), e o motor só o usa pra colisão/juntas.
-function buildRagdollBody(shape, x, y, z, kinematic){
+// Sempre dinâmico de verdade (sem flag cinemática): `mass` decide o peso
+// real da parte perante a gravidade e qualquer força/impulso aplicado nela.
+function buildRagdollBody(shape, x, y, z, mass){
   const transform = new Ammo.btTransform();
   transform.setIdentity();
   transform.setOrigin(new Ammo.btVector3(x, y, z));
   const motionState = new Ammo.btDefaultMotionState(transform);
 
-  const mass = kinematic ? 0 : 1.0;
   const localInertia = new Ammo.btVector3(0,0,0);
-  if(!kinematic) shape.calculateLocalInertia(mass, localInertia);
+  shape.calculateLocalInertia(mass, localInertia);
   const rbInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, shape, localInertia);
   const body = new Ammo.btRigidBody(rbInfo);
   body.setFriction(0.8);
-  body.setDamping(0.15, 0.5); // linear, angular - evita tremedeira quando virar dinâmico
+  body.setDamping(0.15, 0.5); // linear, angular - evita tremedeira
 
-  if(kinematic){
-    body.setCollisionFlags(body.getCollisionFlags() | 2); // CF_KINEMATIC_OBJECT
-  }
   body.setActivationState(4); // DISABLE_DEACTIVATION - nunca "dorme"
 
   physicsWorld.addRigidBody(body);
   return body;
 }
-function buildRagdollCapsuleBody(radius, height, x, y, z, kinematic){
-  return buildRagdollBody(new Ammo.btCapsuleShape(radius, height), x, y, z, kinematic);
+function buildRagdollCapsuleBody(radius, height, x, y, z, mass){
+  return buildRagdollBody(new Ammo.btCapsuleShape(radius, height), x, y, z, mass);
 }
-function buildRagdollSphereBody(radius, x, y, z, kinematic){
-  return buildRagdollBody(new Ammo.btSphereShape(radius), x, y, z, kinematic);
+function buildRagdollSphereBody(radius, x, y, z, mass){
+  return buildRagdollBody(new Ammo.btSphereShape(radius), x, y, z, mass);
 }
 
 // Monta um btTransform local (offset dentro do corpo) com rotação opcional em Euler.
@@ -942,15 +949,16 @@ function buildOpponentRagdoll(){
   const armLPos = opp.lArmPivot.getWorldPosition(new THREE.Vector3());
   const armRPos = opp.rArmPivot.getWorldPosition(new THREE.Vector3());
 
-  const hipBody = buildRagdollCapsuleBody(0.14, 0.06, hipPos.x, hipPos.y, hipPos.z, true);
-  const torsoBody = buildRagdollCapsuleBody(0.16, 0.24, torsoPos.x, torsoPos.y, torsoPos.z, true);
-  const headBody = buildRagdollSphereBody(0.135, headPos.x, headPos.y, headPos.z, true);
-  const legLBody = buildRagdollCapsuleBody(0.065, 0.72, legLPos.x, legLPos.y, legLPos.z, true);
-  const legRBody = buildRagdollCapsuleBody(0.065, 0.72, legRPos.x, legRPos.y, legRPos.z, true);
+  const M = RAGDOLL_MASS_BY_PART;
+  const hipBody = buildRagdollCapsuleBody(0.14, 0.06, hipPos.x, hipPos.y, hipPos.z, M.hip);
+  const torsoBody = buildRagdollCapsuleBody(0.16, 0.24, torsoPos.x, torsoPos.y, torsoPos.z, M.torso);
+  const headBody = buildRagdollSphereBody(0.135, headPos.x, headPos.y, headPos.z, M.head);
+  const legLBody = buildRagdollCapsuleBody(0.065, 0.72, legLPos.x, legLPos.y, legLPos.z, M.legL);
+  const legRBody = buildRagdollCapsuleBody(0.065, 0.72, legRPos.x, legRPos.y, legRPos.z, M.legR);
   // PASSO 5: braço = corpo único (ombro->pulso), sem cotovelo articulado -
   // mesma simplificação já usada nas pernas (que também não têm joelho).
-  const armLBody = buildRagdollCapsuleBody(0.055, 0.42, armLPos.x, armLPos.y, armLPos.z, true);
-  const armRBody = buildRagdollCapsuleBody(0.055, 0.42, armRPos.x, armRPos.y, armRPos.z, true);
+  const armLBody = buildRagdollCapsuleBody(0.055, 0.42, armLPos.x, armLPos.y, armLPos.z, M.armL);
+  const armRBody = buildRagdollCapsuleBody(0.055, 0.42, armRPos.x, armRPos.y, armRPos.z, M.armR);
 
   // --- juntas (já montadas agora, mesmo cinemático, pra estarem prontas
   //     quando a gente soltar o ragdoll de verdade num passo futuro) ---
@@ -992,19 +1000,34 @@ function buildOpponentRagdoll(){
     ammoLocalFrame(0, 0, 0, Math.PI/2),
     1.3, 1.0, 1.2); // ombro direito
 
-  // guarda {body, mesh} de cada parte - o mesh é quem manda por enquanto
-  // (modo cinemático); o body só "segue" pra ficar pronto pro futuro.
+  // guarda {body, mesh} de cada parte - já DINÂMICO desde a criação:
+  // `scene.attach` tira cada mesh da hierarquia manual (opp.root/hip/
+  // torsoPivot/neck/lArmPivot/rArmPivot) preservando a pose mundial atual,
+  // porque a física é quem manda a partir de agora, não mais o esqueleto
+  // animado à mão.
   opp.ragdoll = {
-    hip:   {body: hipBody,   mesh: opp.hip},
-    torso: {body: torsoBody, mesh: opp.torsoMesh},
-    head:  {body: headBody,  mesh: opp.head},
-    legL:  {body: legLBody,  mesh: opp.legMeshes.L},
-    legR:  {body: legRBody,  mesh: opp.legMeshes.R},
-    armL:  {body: armLBody,  mesh: opp.lArmPivot},
-    armR:  {body: armRBody,  mesh: opp.rArmPivot},
+    hip:   {body: hipBody,   mesh: opp.hip,        dynamic: true},
+    torso: {body: torsoBody, mesh: opp.torsoMesh,  dynamic: true},
+    head:  {body: headBody,  mesh: opp.head,       dynamic: true},
+    legL:  {body: legLBody,  mesh: opp.legMeshes.L,dynamic: true},
+    legR:  {body: legRBody,  mesh: opp.legMeshes.R,dynamic: true},
+    armL:  {body: armLBody,  mesh: opp.lArmPivot,  dynamic: true},
+    armR:  {body: armRBody,  mesh: opp.rArmPivot,  dynamic: true},
   };
 
-  console.log('[física] ragdoll do adversário criado, incluindo braços (modo cinemático, seguindo a animação manual).');
+  for(const key in opp.ragdoll){
+    const part = opp.ragdoll[key];
+    scene.attach(part.mesh);
+    rigidBodies.push({mesh: part.mesh, body: part.body});
+  }
+
+  // PASSO 1: sem músculos/equilíbrio ainda (isso é o passo 2) - ele cai
+  // mole assim que a luta começa. `ragdollActive` já entra ligado porque,
+  // diferente de antes, não existe mais uma fase "cinemática" separada
+  // esperando uma queda pra ativar a física de verdade.
+  opp.ragdollActive = true;
+
+  console.log('[física] ragdoll do adversário criado e DINÂMICO desde o início (sem equilíbrio ainda - passo 2 cuida disso).');
 }
 
 // Escreve a pose mundial atual de cada mesh visual do `opp` dentro do corpo
@@ -1057,39 +1080,18 @@ function applyRagdollImpulse(partKey, dirWorld, magnitude, worldPoint){
   }
 }
 
-// PASSO 3: solta o ragdoll de verdade. Vira os 5 corpos de cinemático pra
-// dinâmico (massa real) e reparenta cada mesh direto pro `scene` (preservando
-// a pose mundial atual - `scene.attach` faz exatamente isso), porque daqui
-// pra frente é o Ammo quem manda na posição/rotação de cada parte, igual já
-// acontece com a bolinha de teste (por isso cada parte entra no `rigidBodies`).
-// Retorna true se conseguiu soltar de verdade, false se não dá (Ammo não
+// PASSO 1 (atualizado): o ragdoll já é dinâmico e já está anexado na `scene`
+// desde `buildOpponentRagdoll` - não existe mais nenhum corpo cinemático pra
+// "soltar" aqui. Essa função agora só joga o impulso da queda no quadril e no
+// tronco (o resto sente pelas juntas cone-twist) e reseta o timer de assentar.
+// Retorna true se conseguiu aplicar o impulso, false se não dá (Ammo não
 // carregou, ragdoll não existe etc.) - quem chama cai pro sistema manual antigo.
 // Tudo dentro de try/catch: física/Ammo nunca pode travar o render loop.
 function releaseOpponentRagdoll(impulseVel){
-  if(!physicsReady || !opp.ragdoll || opp.ragdollActive) return false;
+  if(!physicsReady || !opp.ragdoll) return false;
 
   try{
-    const CF_KINEMATIC_OBJECT = 2;
-    // massas aproximadas (kg), só pra ter um "peso" plausível - ajustar depois
-    // de ver o comportamento de verdade no Quest2.
-    const massByPart = {hip:9, torso:7, head:4, legL:3, legR:3, armL:2, armR:2};
-
-    for(const key in opp.ragdoll){
-      const part = opp.ragdoll[key];
-      const body = part.body;
-
-      body.setCollisionFlags(body.getCollisionFlags() & ~CF_KINEMATIC_OBJECT);
-      const mass = massByPart[key] || 3;
-      const localInertia = new Ammo.btVector3(0,0,0);
-      body.getCollisionShape().calculateLocalInertia(mass, localInertia);
-      body.setMassProps(mass, localInertia);
-      body.updateInertiaTensor();
-      body.activate(true);
-
-      scene.attach(part.mesh); // sai da hierarquia manual (hip/torsoPivot/neck) e vira 100% física
-      part.dynamic = true;
-      rigidBodies.push({mesh: part.mesh, body});
-    }
+    for(const key in opp.ragdoll) opp.ragdoll[key].body.activate(true);
 
     // joga o impulso da queda no quadril e no tronco - o resto sente pelas juntas
     const dir = new THREE.Vector3(impulseVel.x, Math.max(impulseVel.y, 0.2), impulseVel.z);
@@ -1102,7 +1104,7 @@ function releaseOpponentRagdoll(impulseVel){
     opp.fallSettleTimer = 0;
     return true;
   } catch(err){
-    console.warn('[física] falha ao soltar o ragdoll, seguindo com a queda manual:', err);
+    console.warn('[física] falha ao aplicar o impulso da queda no ragdoll:', err);
     return false;
   }
 }
@@ -1150,6 +1152,47 @@ function resetOpponentRagdollToKinematic(){
   }
 }
 
+// PASSO 1: usada em `resetMatch()` logo depois de `resetOpponentRagdollToKinematic()`
+// - devolve o ragdoll pro modo dinâmico (com a massa real de cada parte) a
+// partir da pose "de pé" recém-restaurada, igual `buildOpponentRagdoll` faz na
+// primeira vez. Sem isso, a partir da segunda rodada o adversário voltaria a
+// ficar cinemático (preso na animação manual) pro resto da luta.
+function reactivateOpponentRagdoll(){
+  if(!opp.ragdoll) return;
+  try{
+    for(const key in opp.ragdoll){
+      const part = opp.ragdoll[key];
+      const body = part.body;
+      const mass = RAGDOLL_MASS_BY_PART[key] || 3;
+
+      part.mesh.getWorldPosition(tmpVec3);
+      part.mesh.getWorldQuaternion(tmpQuat);
+      const t = new Ammo.btTransform();
+      t.setIdentity();
+      t.setOrigin(new Ammo.btVector3(tmpVec3.x, tmpVec3.y, tmpVec3.z));
+      t.setRotation(new Ammo.btQuaternion(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w));
+      body.setWorldTransform(t);
+      body.getMotionState().setWorldTransform(t);
+
+      const localInertia = new Ammo.btVector3(0,0,0);
+      body.getCollisionShape().calculateLocalInertia(mass, localInertia);
+      body.setMassProps(mass, localInertia);
+      body.updateInertiaTensor();
+      body.setLinearVelocity(new Ammo.btVector3(0,0,0));
+      body.setAngularVelocity(new Ammo.btVector3(0,0,0));
+      body.activate(true);
+
+      scene.attach(part.mesh);
+      part.dynamic = true;
+      rigidBodies.push({mesh: part.mesh, body});
+    }
+    opp.ragdollActive = true;
+    opp.fallSettleTimer = 0;
+  } catch(err){
+    console.warn('[física] falha ao reativar o ragdoll dinâmico pra nova rodada:', err);
+  }
+}
+
 
 // a queda por "assentada" (baixa velocidade no quadril por um tempinho, com
 // uma trava de segurança por tempo máximo) e transiciona o estado do `opp`
@@ -1185,11 +1228,197 @@ function updateRagdollFallSettle(dt){
 }
 
 
+/* ---------------------------------------------------------------------
+   PASSO 2 do "ragdoll ativo": "músculos" de equilíbrio. Em vez de deixar
+   o ragdoll cair mole (passo 1) ou de mover o mesh direto (sistema
+   antigo), a gente aplica força/torque REAIS no quadril e no tronco pra
+   ele tentar ficar de pé e seguir o alvo que a IA de luta continua
+   escrevendo em `opp.root.position/quaternion` (todo o código de
+   movimento/footwork em `updateOpponentAI` continua funcionando do jeito
+   que sempre funcionou - só que agora `opp.root` virou um ALVO que a
+   física persegue com força, não mais uma posição que o mesh copia
+   direto). Isso é uma mola-amortecedor (PD) clássica: quanto mais longe
+   do alvo (ou mais rápido se afastando), mais força/torque ela aplica,
+   até um limite de segurança - assim "perder o equilíbrio" (por soco,
+   por puxão) passa a ser um resultado real da física, não só um número
+   abstrato (`opp.stability` continua existindo por enquanto só pra
+   decidir QUANDO oficialmente declarar a queda - ver passo 6).
+   --------------------------------------------------------------------- */
+const BALANCE_HIP_HEIGHT = 0.92;  // altura alvo do quadril, igual a pose em pé original
+const BALANCE_KP_POS = 700, BALANCE_KD_POS = 90;      // mola/amortecedor de posição
+const BALANCE_KP_ROT = 40,  BALANCE_KD_ROT = 6;       // mola/amortecedor de rotação
+const BALANCE_TORSO_ROT_MULT = 0.7;                    // tronco gira mais frouxo que o quadril
+const BALANCE_MAX_FORCE = 900, BALANCE_MAX_TORQUE = 60; // clamp de segurança
+
+// PASSO 6: perfil de "esforço" bem MAIOR que o de só manter o equilíbrio em
+// pé - usado exclusivamente enquanto ele está tentando se levantar de
+// verdade do chão (estado 'gettingUp'), onde o erro de ângulo/posição em
+// relação ao alvo é MUITO maior (ele começa praticamente deitado) do que
+// qualquer tropeço normal. Sem ganhos maiores, a mola "de tropeço" nunca
+// teria força suficiente pra virar o corpo inteiro de bruços pra em pé.
+const BALANCE_KP_ROT_GETUP = 150, BALANCE_KD_ROT_GETUP = 14, BALANCE_MAX_TORQUE_GETUP = 220;
+const BALANCE_UP_ASSIST_GETUP_MULT = 1.5; // ajuda extra pra vencer a gravidade saindo do chão
+const GETUP_HEIGHT_TOL = 0.12;   // quão perto da altura de pé (ver BALANCE_HIP_HEIGHT) já conta como "de pé"
+const GETUP_UPRIGHT_DOT = 0.75;  // o quanto o "pra cima" do quadril precisa apontar pra cima do mundo
+const GETUP_SETTLE_SPEED = 0.6;  // velocidade linear do quadril abaixo disso = "não tá mais se debatendo"
+const GETUP_HOLD_TIME = 0.35;    // tempo seguido cumprindo os 3 critérios acima antes de confirmar 'standing'
+const GETUP_MAX_TIME = 6.0;      // trava de segurança: física pode ter travado ele em algo - confirma mesmo assim
+
+// Aplica uma força (posição) e um torque (rotação) tipo mola-amortecedor num
+// corpo do ragdoll, puxando ele pra `targetPos`/`targetQuat`. `kpPos===0`
+// desliga a parte de posição (usado no tronco, cuja posição já é presa pelo
+// joint da cintura - só a orientação dele precisa de correção própria).
+// PASSO 5: `maxForce`/`maxTorque` agora são parâmetros opcionais (antes eram
+// sempre BALANCE_MAX_FORCE/BALANCE_MAX_TORQUE fixos) - o "músculo" do braço
+// (ver updateArmMuscles) reaproveita esta mesma função com limites próprios,
+// bem menores que os do quadril/tronco (um braço não devia empurrar como um
+// tronco inteiro). Chamadas antigas continuam iguais, os defaults preservam
+// o comportamento de sempre.
+function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kdRot, extraUpForce, maxForce=BALANCE_MAX_FORCE, maxTorque=BALANCE_MAX_TORQUE){
+  if(!body) return;
+  const ms = body.getMotionState();
+  ms.getWorldTransform(tmpTrans);
+  const origin = tmpTrans.getOrigin();
+  const rot = tmpTrans.getRotation();
+  const curPos = new THREE.Vector3(origin.x(), origin.y(), origin.z());
+  const curQuat = new THREE.Quaternion(rot.x(), rot.y(), rot.z(), rot.w());
+
+  const v = body.getLinearVelocity();
+  const curVel = new THREE.Vector3(v.x(), v.y(), v.z());
+  const av = body.getAngularVelocity();
+  const curAngVel = new THREE.Vector3(av.x(), av.y(), av.z());
+
+  if(kpPos > 0 || extraUpForce){
+    const posErr = targetPos.clone().sub(curPos);
+    const force = posErr.multiplyScalar(kpPos).sub(curVel.multiplyScalar(kdPos));
+    if(extraUpForce) force.y += extraUpForce; // contrabalança a gravidade
+    force.clampLength(0, maxForce);
+    body.applyCentralForce(new Ammo.btVector3(force.x, force.y, force.z));
+  }
+
+  // conjugado manual (quaternion unitário: inverso == conjugado) - evita
+  // depender de `Quaternion.invert()`, que varia de nome entre versões do three.
+  const invCur = new THREE.Quaternion(-curQuat.x, -curQuat.y, -curQuat.z, curQuat.w);
+  const errQuat = targetQuat.clone().multiply(invCur); // rotação que leva atual -> alvo, em espaço mundial
+  if(errQuat.w < 0){ errQuat.x=-errQuat.x; errQuat.y=-errQuat.y; errQuat.z=-errQuat.z; errQuat.w=-errQuat.w; } // caminho mais curto
+  const angle = 2*Math.acos(THREE.MathUtils.clamp(errQuat.w, -1, 1));
+  const s = Math.sqrt(Math.max(0, 1 - errQuat.w*errQuat.w));
+  const axis = new THREE.Vector3(errQuat.x, errQuat.y, errQuat.z);
+  if(s > 0.0001) axis.divideScalar(s); else axis.set(0,0,0);
+
+  const torque = axis.multiplyScalar(angle*kpRot).sub(curAngVel.multiplyScalar(kdRot));
+  torque.clampLength(0, maxTorque);
+  body.applyTorque(new Ammo.btVector3(torque.x, torque.y, torque.z));
+}
+
+// Chamada todo frame de física (dentro de `stepPhysics`, antes do step).
+// Atua em pé/atordoado (mola "fraca", só corrige tropeço) e também durante
+// 'gettingUp' (PASSO 6: mola bem mais FORTE - ver BALANCE_*_GETUP -, é o que
+// faz ele voltar a ficar de pé sozinho, sem nenhuma animação por cima).
+// Caído de verdade ('down') continua sem física de equilíbrio nenhuma - só o
+// cabo-de-guerra do `getUpProgress` decide QUANDO ele começa a tentar (ver
+// ramo 'down' de `updateOpponentAI`); a partir daí quem manda é esta função.
+function updateOpponentBalance(dt){
+  if(!opp.ragdoll || !opp.ragdollActive) return;
+  const gettingUp = opp.state==='gettingUp';
+  if(opp.state!=='standing' && opp.state!=='staggered' && !gettingUp) return;
+
+  const hip = opp.ragdoll.hip, torso = opp.ragdoll.torso;
+  if(!hip || !hip.body) return;
+
+  const targetPos = opp.root.position.clone();
+  targetPos.y += BALANCE_HIP_HEIGHT;
+  const targetQuat = opp.root.quaternion.clone();
+
+  const hipMass = RAGDOLL_MASS_BY_PART.hip;
+  const kpRot = gettingUp ? BALANCE_KP_ROT_GETUP : BALANCE_KP_ROT;
+  const kdRot = gettingUp ? BALANCE_KD_ROT_GETUP : BALANCE_KD_ROT;
+  const maxTorque = gettingUp ? BALANCE_MAX_TORQUE_GETUP : BALANCE_MAX_TORQUE;
+  const upAssistMult = gettingUp ? BALANCE_UP_ASSIST_GETUP_MULT : 1;
+
+  applyBalanceSpring(hip.body, targetPos, targetQuat,
+    BALANCE_KP_POS, BALANCE_KD_POS, kpRot, kdRot, hipMass*9.8*upAssistMult,
+    BALANCE_MAX_FORCE, maxTorque);
+
+  if(torso && torso.body){
+    // tronco: sem mola de posição própria (o joint da cintura já cuida disso)
+    // - só corrige a orientação dele e contrabalança o peso dele na vertical.
+    applyBalanceSpring(torso.body, targetPos, targetQuat,
+      0, 0, kpRot*BALANCE_TORSO_ROT_MULT, kdRot*BALANCE_TORSO_ROT_MULT,
+      RAGDOLL_MASS_BY_PART.torso*9.8*upAssistMult,
+      BALANCE_MAX_FORCE, maxTorque);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   PASSO 5 do "ragdoll ativo": "músculo" do ombro. Mesmo princípio da mola
+   de equilíbrio acima (PASSO 2), só que pro braço - e RODANDO SEMPRE
+   (em pé, atordoado, caído, levantando, sendo segurado por outra parte -
+   não só 'standing' como o equilíbrio do corpo/quadril). Sem isso, o soco
+   (e a guarda) não tinham efeito NENHUM desde o PASSO 1: `updateOpponentAI`
+   girava `opp.lArmPivot.rotation` direto, mas como o braço já virou corpo
+   de ragdoll dinâmico ali, `stepPhysics` sobrescrevia essa rotação com a
+   física real logo em seguida, no mesmo frame - a IA "socava no vácuo"
+   visualmente. Agora a IA só escreve um ALVO (`opp.armTargetLocal`) e essa
+   mola persegue ele com torque de verdade; como ela roda em QUALQUER
+   estado, o soco continua acontecendo fisicamente mesmo largado no chão ou
+   com a outra parte presa no seu agarrão - é o "continua lutando largado"
+   do passo 5.
+   --------------------------------------------------------------------- */
+const ARM_MUSCLE_KP_ROT = 55,  ARM_MUSCLE_KD_ROT = 5,  ARM_MUSCLE_MAX_TORQUE = 40;        // parado/guarda - solto
+const ARM_MUSCLE_KP_ROT_PUNCH = 150, ARM_MUSCLE_KD_ROT_PUNCH = 8, ARM_MUSCLE_MAX_TORQUE_PUNCH = 90; // socando - rígido/rápido
+
+// Chamada todo frame de física (dentro de `stepPhysics`, antes do step),
+// pros dois braços. `opp.armTargetLocal[side]` é a pose-alvo (radianos, no
+// mesmo espaço local-ao-tronco que `buildArm`/`updateOpponentAI` sempre
+// usaram); convertida aqui pra um quaternion MUNDIAL usando a orientação
+// ATUAL de verdade do tronco físico (não mais a hierarquia congelada de
+// `torsoPivot`, que fica órfã depois que o ragdoll solta o mesh do tronco).
+function updateArmMuscles(dt){
+  if(!opp.ragdoll || !opp.armTargetLocal) return;
+  const torso = opp.ragdoll.torso;
+  if(!torso) return;
+
+  [['L','armL','lArmPivot'], ['R','armR','rArmPivot']].forEach(([side, ragdollKey, pivotKey])=>{
+    const part = opp.ragdoll[ragdollKey];
+    if(!part) return;
+    const tgt = opp.armTargetLocal[side];
+
+    // Fallback pro modo cinemático: depois do PASSO 6, isso só acontece de
+    // verdade no reset de rodada (`resetMatch` -> `resetOpponentRagdollToKinematic`
+    // seguido na hora de `reactivateOpponentRagdoll`) - nunca mais durante
+    // uma queda/levantada no meio da luta, que agora é 100% física. Nesse
+    // modo o braço é filho normal de `opp.torsoPivot`, então a rotação LOCAL
+    // direta no mesh é o jeito certo, sem física nenhuma envolvida.
+    if(!part.dynamic){
+      part.mesh.rotation.x = tgt.x;
+      part.mesh.rotation.z = tgt.z;
+      return;
+    }
+    if(!part.body || !torso.body) return;
+
+    torso.mesh.getWorldQuaternion(tmpArmTorsoQuat);
+    tmpArmLocalQuat.setFromEuler(new THREE.Euler(tgt.x, 0, tgt.z, 'XYZ'));
+    tmpArmTargetQuat.copy(tmpArmTorsoQuat).multiply(tmpArmLocalQuat);
+
+    // enquanto ESTE braço está no meio do soco, o "músculo" fica bem mais
+    // rígido/rápido (senão o soco ficaria molenga, sem força real de socar)
+    const punching = opp.attacking && opp.attackSwing === opp[pivotKey];
+    const kpRot = punching ? ARM_MUSCLE_KP_ROT_PUNCH : ARM_MUSCLE_KP_ROT;
+    const kdRot = punching ? ARM_MUSCLE_KD_ROT_PUNCH : ARM_MUSCLE_KD_ROT;
+    const maxTorque = punching ? ARM_MUSCLE_MAX_TORQUE_PUNCH : ARM_MUSCLE_MAX_TORQUE;
+
+    applyBalanceSpring(part.body, tmpArmDummyPos, tmpArmTargetQuat, 0, 0, kpRot, kdRot, 0, BALANCE_MAX_FORCE, maxTorque);
+  });
+}
+
 // Roda a simulação e copia a posição/rotação de cada corpo físico pro mesh Three.js correspondente.
 function stepPhysics(dt){
   if(!physicsReady) return;
 
   syncOpponentRagdollKinematic(); // escreve a pose atual do opp nos corpos cinemáticos ANTES do step
+  updateOpponentBalance(dt);      // PASSO 2: aplica força/torque de equilíbrio ANTES do step
+  updateArmMuscles(dt);           // PASSO 5: idem, mas pro braço - roda em QUALQUER estado
 
   physicsWorld.stepSimulation(dt, 10);
 
@@ -1426,6 +1655,17 @@ function applyArenaScenario(key){
   if(arenaMatMaterial) arenaMatMaterial.color.setHex(theme.matTint);
   if(arenaPadMat) arenaPadMat.color.setHex(theme.padTint);
   if(arenaStandMaterial) arenaStandMaterial.color.setHex(theme.standTint);
+
+  // NOVO: cenário florido troca o mapa do "stand" pro pano de fundo com
+  // céu/sol/rio (em vez de só retintar a arquibancada) e liga o chão de
+  // grama; qualquer outro cenário volta a mostrar a arquibancada normal.
+  const isGarden = (key === 'garden');
+  if(window.__gardenGround) window.__gardenGround.visible = isGarden;
+  if(window.__standMesh && window.__standTex && window.__gardenBackdropTex){
+    window.__standMesh.material.map = isGarden ? window.__gardenBackdropTex : window.__standTex;
+    window.__standMesh.material.opacity = isGarden ? 1.0 : 0.9;
+    window.__standMesh.material.needsUpdate = true;
+  }
 }
 
 function onResize(){
@@ -1629,8 +1869,12 @@ function buildArena(){
   // Limite padrão = o próprio octógono, até o guardian real ser detectado (ver setupVRButton)
   buildBoundaryFence(fallbackPoly);
 
-  // arquibancada sugerida (silhueta escura ao fundo)
+  // arquibancada sugerida (silhueta escura ao fundo) OU, no cenário florido,
+  // o pano de fundo com sol/rio/colinas (ver applyArenaScenario, que troca o
+  // mapa dessa mesma geometria conforme o cenário escolhido).
   const standTex = createStandTexture();
+  window.__standTex = standTex;
+  window.__gardenBackdropTex = createGardenBackdropTexture();
   const standMat = new THREE.MeshBasicMaterial({map:standTex, side:THREE.BackSide, transparent:true, opacity:0.9, color: theme.standTint});
   arenaStandMaterial = standMat;
   const stand = new THREE.Mesh(
@@ -1639,6 +1883,21 @@ function buildArena(){
   );
   stand.position.y = 2;
   scene.add(stand);
+  window.__standMesh = stand;
+
+  // NOVO: chão de grama/flores do cenário florido ("grama no pé" pedido) -
+  // um disco grande por baixo/ao redor do tapete, sempre construído mas só
+  // visível quando o cenário "garden" está ativo (ver applyArenaScenario).
+  const groundTex = createGardenGroundTexture();
+  groundTex.repeat.set(6,6);
+  const groundMat = new THREE.MeshStandardMaterial({map:groundTex, roughness:0.95, metalness:0});
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(8.8, 48), groundMat);
+  ground.rotation.x = -Math.PI/2;
+  ground.position.y = -0.04;
+  ground.receiveShadow = true;
+  ground.visible = (currentScenarioKey === 'garden');
+  scene.add(ground);
+  window.__gardenGround = ground;
 }
 
 function createMatTexture(){
@@ -1684,7 +1943,7 @@ function createMatTexture(){
 // mesmo estilo das outras texturas geradas em canvas deste jogo. Usada com
 // RepeatWrapping pra dar granulação fina em qualquer mesh (tronco, braços,
 // pernas, cabeça), sem precisar de UVs sob medida por parte do corpo.
-function createSkinTexture(baseHex){
+function createSkinTexture(baseHex, flush){
   // ETAPA VISUAL: resolução dobrada (1024) - textura de pele nítida mesmo de
   // perto em VR, em vez de borrada como em 512.
   const S = 1024;
@@ -1711,6 +1970,20 @@ function createSkinTexture(baseHex){
     const x = Math.random()*S, y = Math.random()*S;
     const rx = 16+Math.random()*44, ry = 16+Math.random()*44;
     ctx.beginPath(); ctx.ellipse(x,y,rx,ry,Math.random()*Math.PI,0,Math.PI*2); ctx.fill();
+  }
+  // ETAPA VISUAL (corado): manchas quentes/avermelhadas espalhadas - imitam
+  // a vermelhidão natural de esforço físico (rosto, orelha, etc.) sem virar
+  // hematoma nem sangue de verdade. Só ligado pro inimigo (flush=true).
+  if(flush){
+    for(let i=0;i<70;i++){
+      const x = Math.random()*S, y = Math.random()*S;
+      const r = 18+Math.random()*46;
+      const grad = ctx.createRadialGradient(x,y,0,x,y,r);
+      grad.addColorStop(0,'rgba(196,72,58,0.16)');
+      grad.addColorStop(1,'rgba(196,72,58,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
   }
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -1761,17 +2034,126 @@ function createFenceTexture(){
   return tex;
 }
 function createStandTexture(){
+  // ETAPA VISUAL: mais contraste no degradê + mais pontinhos de "plateia"
+  // (arquibancada lê com mais profundidade em vez de uma faixa cinza lisa).
   const c = document.createElement('canvas'); c.width=1024;c.height=512;
   const ctx = c.getContext('2d');
   const grad = ctx.createLinearGradient(0,0,0,512);
-  grad.addColorStop(0,'#ececeb'); grad.addColorStop(0.5,'#d8d8d5'); grad.addColorStop(1,'#ececeb');
+  grad.addColorStop(0,'#e2e2e1'); grad.addColorStop(0.5,'#c6c6c4'); grad.addColorStop(1,'#e2e2e1');
   ctx.fillStyle = grad; ctx.fillRect(0,0,1024,512);
-  ctx.fillStyle = 'rgba(120,120,130,0.35)';
-  for(let i=0;i<400;i++){
+  ctx.fillStyle = 'rgba(110,110,120,0.4)';
+  for(let i=0;i<600;i++){
     ctx.beginPath();
-    ctx.arc(Math.random()*1024, 150+Math.random()*250, Math.random()*1.6, 0, Math.PI*2);
+    ctx.arc(Math.random()*1024, 150+Math.random()*250, Math.random()*1.7, 0, Math.PI*2);
     ctx.fill();
   }
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// NOVO (cenário florido): textura do CHÃO - grama com variação de tom +
+// flores espalhadas (branco/amarelo/rosa/lilás), em RepeatWrapping pra
+// cobrir o disco de chão inteiro sem esticar. Usada só por __gardenGround.
+function createGardenGroundTexture(){
+  const S = 1024;
+  const c = document.createElement('canvas'); c.width=S; c.height=S;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(S/2,S/2,S*0.05,S/2,S/2,S*0.55);
+  grad.addColorStop(0,'#5fa544'); grad.addColorStop(0.6,'#4f8f38'); grad.addColorStop(1,'#3d752c');
+  ctx.fillStyle = grad; ctx.fillRect(0,0,S,S);
+  // fiapos de grama (traços curtos, tom variando pra não ficar liso)
+  for(let i=0;i<15000;i++){
+    const shade = (Math.random()-0.5)*0.22;
+    const tint = new THREE.Color(0x4f8f38).offsetHSL(0,0,shade);
+    ctx.strokeStyle = `rgba(${Math.round(tint.r*255)},${Math.round(tint.g*255)},${Math.round(tint.b*255)},0.55)`;
+    ctx.lineWidth = 1.3;
+    const x = Math.random()*S, y = Math.random()*S;
+    const len = 4+Math.random()*8;
+    const ang = -Math.PI/2 + (Math.random()-0.5)*1.0;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(ang)*len, y+Math.sin(ang)*len); ctx.stroke();
+  }
+  // flores (o "florido" do cenário) - miolo amarelo + 5 pétalas
+  const petalColors = ['#ffffff','#fff3a3','#ffb8dd','#cdb0ff'];
+  for(let i=0;i<460;i++){
+    const x = Math.random()*S, y = Math.random()*S;
+    ctx.fillStyle = petalColors[(Math.random()*petalColors.length)|0];
+    for(let p=0;p<5;p++){
+      const a = (p/5)*Math.PI*2;
+      ctx.beginPath(); ctx.arc(x+Math.cos(a)*2.4, y+Math.sin(a)*2.4, 1.7, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.fillStyle = '#f2c94c';
+    ctx.beginPath(); ctx.arc(x,y,1.2,0,Math.PI*2); ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 8;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// NOVO (cenário florido): pano de fundo pintado num canvas só - céu aberto
+// com degradê + sol com brilho (glow radial) + nuvens + colinas verdes +
+// um RIO serpenteando na faixa do meio-fundo + árvores na margem. Aplicado
+// na MESMA geometria cilíndrica que já existia pra arquibancada (ver
+// buildArena/applyArenaScenario) - troca só o mapa/textura, sem criar
+// geometria nova nem pesar mais no Quest2.
+function createGardenBackdropTexture(){
+  const W = 1536, H = 768;
+  const c = document.createElement('canvas'); c.width=W; c.height=H;
+  const ctx = c.getContext('2d');
+
+  // céu aberto
+  const sky = ctx.createLinearGradient(0,0,0,H*0.62);
+  sky.addColorStop(0,'#4fa3e8'); sky.addColorStop(0.55,'#a6d8f2'); sky.addColorStop(1,'#e4f4e2');
+  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H*0.62);
+
+  // sol (disco + brilho ao redor)
+  const sunX = W*0.78, sunY = H*0.16, sunR = 60;
+  const glow = ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,sunR*4.2);
+  glow.addColorStop(0,'rgba(255,250,215,0.95)');
+  glow.addColorStop(0.3,'rgba(255,240,175,0.45)');
+  glow.addColorStop(1,'rgba(255,240,175,0)');
+  ctx.fillStyle = glow; ctx.fillRect(sunX-sunR*4.2, sunY-sunR*4.2, sunR*8.4, sunR*8.4);
+  ctx.fillStyle = '#fff8d8';
+  ctx.beginPath(); ctx.arc(sunX,sunY,sunR,0,Math.PI*2); ctx.fill();
+
+  // nuvens
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for(let i=0;i<10;i++){
+    const cx = Math.random()*W, cy = H*0.07+Math.random()*H*0.18, s = 28+Math.random()*42;
+    for(let k=0;k<4;k++){
+      ctx.beginPath(); ctx.arc(cx+k*s*0.6, cy+Math.sin(k)*6, s*0.5, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  // colinas distantes
+  ctx.fillStyle = '#6fa860';
+  ctx.beginPath(); ctx.moveTo(0,H*0.58);
+  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, H*0.58 - Math.sin(x*0.006)*22 - 10); }
+  ctx.lineTo(W,H*0.68); ctx.lineTo(0,H*0.68); ctx.closePath(); ctx.fill();
+
+  // RIO serpenteando no meio-fundo (pedido: "ver um rio no fundo")
+  ctx.strokeStyle = '#bfe3ef'; ctx.lineWidth = 26; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, H*0.655);
+  for(let x=0;x<=W;x+=60){ ctx.lineTo(x, H*0.655 + Math.sin(x*0.012)*18); }
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 6; ctx.stroke();
+
+  // árvores na margem do rio
+  for(let i=0;i<26;i++){
+    const x = Math.random()*W, y = H*0.60+Math.random()*H*0.06;
+    ctx.fillStyle = '#4d7a34';
+    ctx.beginPath(); ctx.arc(x,y,14+Math.random()*10,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#6b4a2a';
+    ctx.fillRect(x-2,y+6,4,14);
+  }
+
+  // grama no horizonte próximo, antes de encontrar o chão real (__gardenGround)
+  const grassGrad = ctx.createLinearGradient(0,H*0.68,0,H);
+  grassGrad.addColorStop(0,'#5a9e3f'); grassGrad.addColorStop(1,'#3c722a');
+  ctx.fillStyle = grassGrad; ctx.fillRect(0,H*0.68,W,H*0.32);
+
   const tex = new THREE.CanvasTexture(c);
   tex.needsUpdate = true;
   return tex;
@@ -1827,169 +2209,203 @@ function buildBloodTexture(){
   bloodTex = new THREE.CanvasTexture(c);
   bloodTex.needsUpdate = true;
 }
-// ETAPA 8 (realismo): textura fina e comprida (mais larga no topo, afinando
-// pra baixo) pro efeito de sangue ESCORRENDO pela pele - usada por
-// spawnBloodDrip/growBloodDrip, esticada em Y conforme o "fio" de sangue desce.
-function buildBloodDripTexture(){
-  const c = document.createElement('canvas'); c.width=32; c.height=128;
-  const ctx = c.getContext('2d');
-  ctx.clearRect(0,0,32,128);
-  const grad = ctx.createLinearGradient(0,0,0,128);
-  grad.addColorStop(0,'rgba(115,0,0,0.95)');
-  grad.addColorStop(0.5,'rgba(90,0,0,0.85)');
-  grad.addColorStop(1,'rgba(70,0,0,0.5)');
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.moveTo(16,2);
-  ctx.bezierCurveTo(26,10, 22,42, 18,72);
-  ctx.bezierCurveTo(16,92, 20,106, 15,126);
-  ctx.lineTo(10,126);
-  ctx.bezierCurveTo(14,102, 10,86, 13,66);
-  ctx.bezierCurveTo(9,36, 6,12, 16,2);
-  ctx.closePath();
-  ctx.fill();
-  // "ferimento" brilhando um pouco mais forte bem no topo, onde o sangue nasce
-  const glow = ctx.createRadialGradient(16,8,0,16,8,14);
-  glow.addColorStop(0,'rgba(160,10,10,0.9)');
-  glow.addColorStop(1,'rgba(160,10,10,0)');
-  ctx.fillStyle = glow;
-  ctx.beginPath(); ctx.arc(16,8,14,0,Math.PI*2); ctx.fill();
-  bloodDripTex = new THREE.CanvasTexture(c);
-  bloodDripTex.needsUpdate = true;
+// ETAPA 9 (realismo total - sangue vira PELE, não decalque colado):
+// -----------------------------------------------------------------------
+// Prepara uma malha (opp.head / opp.torsoMesh) pra poder ser "pintada" de
+// sangue: cria o atributo de cor por vértice (começa todo branco = pele
+// normal, sem nenhum tingimento) e um ruído FIXO por vértice (não muda mais
+// depois de gerado) que dá o formato irregular de mancha/respingo real em
+// vez de um círculo perfeito.
+function initBloodPaint(mesh){
+  const geo = mesh.geometry;
+  const count = geo.attributes.position.count;
+  if(!geo.attributes.color){
+    const colors = new Float32Array(count*3).fill(1); // 1,1,1 = sem tingimento (mostra a pele normal)
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  mesh.userData.bloodDamage = new Float32Array(count); // 0 = pele limpa .. 1 = totalmente ensanguentado
+  const noise = new Float32Array(count);
+  for(let i=0;i<count;i++) noise[i] = Math.random();
+  mesh.userData.bloodNoise = noise;
 }
-// ETAPA 8: em vez de só empilhar um decalque solto e aleatório, primeiro
-// reforça (opacidade + tamanho) qualquer decalque já existente perto desse
-// ponto de impacto - é isso que faz a MESMA área ficar progressivamente mais
-// suja de sangue quanto mais apanha ali, em vez de manchas soltas por tudo
-// quanto é lugar do corpo.
-function spawnBloodDecal(parentMesh, localPos, scale){
-  if(!parentMesh.userData.decals) parentMesh.userData.decals = [];
-  const decals = parentMesh.userData.decals;
-  let nearbyHits = 0;
-  decals.forEach(d=>{
-    if(d.position.distanceTo(localPos) < BLOOD_STAIN_RADIUS){
-      nearbyHits++;
-      d.material.opacity = Math.min(BLOOD_DECAL_MAX_OPACITY, d.material.opacity + BLOOD_DECAL_OPACITY_STEP);
-      d.userData.growth = Math.min(BLOOD_DECAL_MAX_SCALE, (d.userData.growth||1) * BLOOD_DECAL_GROW_STEP);
-      d.scale.setScalar(d.userData.growth);
+// Recalcula a cor final de cada vértice a partir do quanto ele já está
+// "sujo" (bloodDamage) - pele limpa fica branca (não tinge a textura),
+// sangue recente fica num vermelho mais vivo, e conforme acumula mais
+// acertos no mesmo lugar vai escurecendo (efeito de sangue secando por cima
+// do que ainda está fresco), com uma variação sutil por vértice pra não
+// ficar uma cor lisa demais.
+function applyBloodColors(mesh){
+  const colorAttr = mesh.geometry.attributes.color;
+  const damage = mesh.userData.bloodDamage;
+  const noise = mesh.userData.bloodNoise;
+  const wet = BLOOD_COLOR_WET, dry = BLOOD_COLOR_DRY;
+  for(let i=0;i<damage.length;i++){
+    const d = damage[i];
+    if(d<=0.001){ colorAttr.setXYZ(i,1,1,1); continue; }
+    const dryness = Math.min(1, d*0.55 + noise[i]*0.25);
+    const r = THREE.MathUtils.lerp(wet.r, dry.r, dryness);
+    const g = THREE.MathUtils.lerp(wet.g, dry.g, dryness);
+    const b = THREE.MathUtils.lerp(wet.b, dry.b, dryness);
+    colorAttr.setXYZ(i, THREE.MathUtils.lerp(1,r,d), THREE.MathUtils.lerp(1,g,d), THREE.MathUtils.lerp(1,b,d));
+  }
+  colorAttr.needsUpdate = true;
+}
+// Pinta sangue de verdade na pele: soma "dano" (sujeira de sangue) em todo
+// vértice dentro de um raio do ponto de impacto (`localPos`, no espaço
+// local do mesh). A forma NÃO é um círculo limpo:
+//  - `elongation` estica a mancha pra BAIXO (direção da gravidade), como um
+//    corte que escorreu, em vez de uma bolha redonda simétrica.
+//  - o ruído fixo por vértice (bloodNoise) entorta a borda (mancha realista,
+//    com reentrâncias) e cria respingos soltos um pouco além do raio
+//    principal (gotículas isoladas ao redor do ferimento).
+// Como o dano só SOMA (nunca reseta) e vai sendo pintado no vértice real do
+// corpo, a mesma região fica visivelmente mais suja a cada soco novo ali -
+// e como tudo começa zerado, no início da luta a pele está 100% limpa.
+function paintBlood(mesh, localPos, intensity, radius, elongation){
+  if(!mesh.userData.bloodDamage) initBloodPaint(mesh);
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const damage = mesh.userData.bloodDamage;
+  const noise = mesh.userData.bloodNoise;
+  radius = radius || BLOOD_PAINT_RADIUS;
+  elongation = elongation || 1;
+  const reach = radius*1.7;
+  const v = new THREE.Vector3();
+  let changed = false;
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    const dx = v.x-localPos.x, dy = v.y-localPos.y, dz = v.z-localPos.z;
+    // estica só pra baixo (dy<0 = abaixo do ferimento) - acima do ferimento a
+    // mancha fica normal, redonda; abaixo ela "escorre" mais longe.
+    const dyAdj = dy>0 ? dy : dy/elongation;
+    const dist = Math.sqrt(dx*dx + dyAdj*dyAdj + dz*dz);
+    if(dist > reach) continue;
+    const n = noise[i];
+    const edgeJitter = (n-0.5)*radius*0.85; // borda irregular, não círculo perfeito
+    let falloff = 1 - THREE.MathUtils.clamp((dist-edgeJitter)/radius, 0, 1);
+    // respingos soltos: pontos isolados de ruído alto um pouco além da mancha principal
+    if(falloff<=0 && dist < reach && n>0.86){
+      falloff = (1-(dist-radius)/(reach-radius)) * 0.5;
     }
-  });
-  const mat = new THREE.MeshBasicMaterial({
-    map:bloodTex, transparent:true, depthWrite:false, side:THREE.DoubleSide,
-    opacity: Math.min(BLOOD_DECAL_MAX_OPACITY, BLOOD_DECAL_START_OPACITY + nearbyHits*0.08)
-  });
-  const geo = new THREE.PlaneGeometry(scale, scale);
-  const m = new THREE.Mesh(geo, mat);
-  m.position.copy(localPos);
-  m.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
-  m.userData.growth = 1;
-  parentMesh.add(m);
-  decals.push(m);
-  if(decals.length > bloodDecalCap){
-    const old = decals.shift();
-    parentMesh.remove(old);
-    old.geometry.dispose(); old.material.dispose();
+    if(falloff<=0) continue;
+    const add = falloff*falloff*intensity;
+    if(add<=0.004) continue;
+    damage[i] = Math.min(1, damage[i]+add);
+    changed = true;
   }
-  // ETAPA 8 (realismo): a partir da 2ª vez que a MESMA região apanha, o
-  // sangue já acumulado passa a escorrer de verdade pela pele - em vez de
-  // nascer um fio novo a cada soco, reforça/estica o fio que já está ali.
-  if(nearbyHits >= 1){
-    spawnOrGrowBloodDrip(parentMesh, localPos, 0.06 + Math.min(nearbyHits,4)*0.05 + Math.random()*0.03);
-  }
+  if(changed) applyBloodColors(mesh);
 }
-// Procura um fio de sangue já escorrendo perto desse ponto (mesmo critério
-// de "mesmo lugar" dos decalques) - se achar, só estica o alvo de quanto ele
-// ainda vai crescer (o fio real cresce aos poucos em updateBloodDrips, não
-// pula de tamanho). Se não achar e ainda não estourou o limite por parte do
-// corpo, nasce um fio novo ancorado exatamente no ferimento.
-function spawnOrGrowBloodDrip(parentMesh, localPos, targetLen){
-  if(!parentMesh.userData.drips) parentMesh.userData.drips = [];
-  const drips = parentMesh.userData.drips;
-  for(let i=0;i<drips.length;i++){
-    const d = drips[i];
-    if(d.anchor.distanceTo(localPos) < BLOOD_STAIN_RADIUS*1.3){
-      d.targetLen = Math.max(d.targetLen, targetLen);
-      return;
-    }
+// Limpa toda a pintura de sangue de uma malha (usado ao reiniciar a luta).
+function clearBloodPaint(mesh){
+  if(!mesh.userData.bloodDamage) return;
+  mesh.userData.bloodDamage.fill(0);
+  const colorAttr = mesh.geometry.attributes.color;
+  for(let i=0;i<colorAttr.count;i++) colorAttr.setXYZ(i,1,1,1);
+  colorAttr.needsUpdate = true;
+}
+// Chamada em cada soco eficaz: pinta o ferimento principal (mancha central +
+// alguns respingos menores espalhados ao redor, pra não parecer um "carimbo"
+// perfeitamente centrado) e começa/alimenta um fio de sangue escorrendo
+// pra baixo a partir dali (ver spawnBloodDrip/updateBloodDrips). `scale`
+// (já calculado nos pontos de chamada, cresce com o dano acumulado do
+// adversário) vira o raio da mancha - hematomas em zonas já castigadas
+// ficam maiores. `bloodRatio` (0..1) é o mesmo usado em spawnBloodBurst: se
+// ainda está na fase de "só saliva/suor" (bloodRatio baixo), a pele quase
+// não mancha - a mancha real só aparece de fato quando já virou sangue.
+function spawnBloodDecal(mesh, localPos, scale, bloodRatio){
+  bloodRatio = bloodRatio==null ? 1 : THREE.MathUtils.clamp(bloodRatio,0,1);
+  if(bloodRatio < 0.03) return; // ainda é só saliva/suor - não suja a pele
+  const radius = scale;
+  const intensity = (0.5+Math.random()*0.3) * bloodRatio;
+  paintBlood(mesh, localPos, intensity, radius, 1.7);
+  const splatterCount = 2+Math.floor(Math.random()*3);
+  for(let i=0;i<splatterCount;i++){
+    const off = new THREE.Vector3(
+      (Math.random()-0.5)*radius*2.2,
+      (Math.random()-0.35)*radius*2.2,
+      (Math.random()-0.5)*radius*2.2
+    );
+    paintBlood(mesh, localPos.clone().add(off), intensity*0.3*Math.random(), radius*0.4, 1.3);
   }
-  if(drips.length >= BLOOD_DRIP_CAP) return; // corpo já está escorrendo o suficiente ali
-  const mat = new THREE.MeshBasicMaterial({
-    map:bloodDripTex, transparent:true, depthWrite:false, side:THREE.DoubleSide, opacity:0.9
+  if(bloodRatio > 0.12) spawnBloodDrip(mesh, localPos, 0.1+Math.random()*0.22); // só escorre quando já é sangue de verdade
+}
+// Sangue escorrendo pela pele de verdade: em vez de um plano grudado por
+// cima, isso pinta aos poucos (frame a frame, ver updateBloodDrips) uma
+// trilha fina descendo a partir do ferimento - a pele em si vai ficando
+// vermelha ao longo do caminho, como um fio de sangue de verdade correndo
+// pela curvatura do corpo.
+function spawnBloodDrip(mesh, localPos, maxLen){
+  if(activeBloodDrips.length > 40) activeBloodDrips.shift(); // teto de segurança
+  activeBloodDrips.push({
+    mesh, anchor: localPos.clone(), len:0, maxLen,
+    speed: 0.05+Math.random()*0.07,
+    radius: 0.012+Math.random()*0.008
   });
-  const geo = new THREE.PlaneGeometry(BLOOD_DRIP_WIDTH, BLOOD_DRIP_BASE_HEIGHT);
-  const m = new THREE.Mesh(geo, mat);
-  // gira só em torno do eixo vertical (pra não ficar sempre de frente igual),
-  // mas mantém o fio alinhado com "baixo" de verdade - é assim que escorre.
-  m.rotation.y = Math.random()*Math.PI*2;
-  parentMesh.add(m);
-  const drip = {
-    mesh:m, anchor:localPos.clone(), curLen:BLOOD_DRIP_BASE_HEIGHT, targetLen,
-    growSpeed: BLOOD_DRIP_GROW_SPEED_MIN + Math.random()*(BLOOD_DRIP_GROW_SPEED_MAX-BLOOD_DRIP_GROW_SPEED_MIN),
-  };
-  drips.push(drip);
-  activeDrips.push(drip);
-  positionBloodDrip(drip, localPos);
 }
-// Reposiciona/redimensiona o fio mantendo o TOPO fixo no ferimento (o plane
-// cresce a partir do centro, então o topo precisa descer junto com o quanto
-// ele estica pra baixo - senão o sangue "nasceria" flutuando no ar).
-function positionBloodDrip(drip, anchorLocalPos){
-  const scaleY = drip.curLen/BLOOD_DRIP_BASE_HEIGHT;
-  drip.mesh.scale.y = scaleY;
-  drip.mesh.position.set(
-    anchorLocalPos.x,
-    anchorLocalPos.y - drip.curLen/2,
-    anchorLocalPos.z
-  );
-}
-// Chamado todo frame (ver render()) - cresce cada fio ativo em direção ao seu
-// targetLen (que só aumenta com novos acertos na mesma região - ver
-// spawnOrGrowBloodDrip), até um teto absoluto pra não virar uma coluna infinita.
-const BLOOD_DRIP_MAX_LEN = 0.42;
+// Chamado todo frame (ver render()): cada fio ativo cresce um pouco e pinta
+// a pele na sua ponta atual, descendo - até atingir seu comprimento máximo,
+// quando some da lista (a mancha que ele pintou continua lá, é permanente).
 function updateBloodDrips(dt){
-  for(let i=0;i<activeDrips.length;i++){
-    const d = activeDrips[i];
-    const cap = Math.min(d.targetLen, BLOOD_DRIP_MAX_LEN);
-    if(d.curLen < cap){
-      d.curLen = Math.min(cap, d.curLen + dt*d.growSpeed);
-      positionBloodDrip(d, d.anchor);
-    }
+  for(let i=activeBloodDrips.length-1;i>=0;i--){
+    const d = activeBloodDrips[i];
+    d.len += dt*d.speed;
+    const tip = d.anchor.clone(); tip.y -= Math.min(d.len, d.maxLen);
+    paintBlood(d.mesh, tip, 0.5, d.radius, 1.2);
+    if(d.len >= d.maxLen) activeBloodDrips.splice(i,1);
   }
 }
-// ETAPA 8: pequena explosão de sangue por soco eficaz - mistura poucas gotas
-// maiores (mais lentas, caem de verdade com a gravidade) com um respingo fino
-// de muitas partículas pequenas que se espalham rápido pra todo lado e somem
-// logo, em vez das 6 bolinhas uniformes de antes (ver `updateParticles` pro
-// fade de opacidade/escala que acompanha essa mudança).
+// ETAPA 10: a explosão agora também é gradual - no início da luta (ou numa
+// região ainda "fresca", sem dano acumulado) um soco eficaz solta só saliva/
+// suor (líquido claro, mais transparente) e NÃO sangue de verdade. Só depois
+// que aquela região já apanhou o suficiente (ver `bloodRatio`, calculado nos
+// pontos de chamada a partir do dano acumulado + força do soco) é que o
+// líquido vai ficando cada vez mais vermelho/opaco até virar sangue de fato.
+const SPIT_COLOR_A = new THREE.Color(0xeaf2ea); // saliva/suor - quase incolor, levemente esverdeado
+const SPIT_COLOR_B = new THREE.Color(0xd9e6d2);
+const BLOOD_COLOR_A = new THREE.Color(0x8a0000);
+const BLOOD_COLOR_B = new THREE.Color(0x6e0000);
+const BLOOD_MIST_SPIT = new THREE.Color(0xeef5ee);
+const BLOOD_MIST_BLOOD = new THREE.Color(0x9a1010);
 // Orienta um mesh pra ficar "esticado" na direção do voo (rastro de sangue de
 // verdade, não bolinha) - alinha o eixo Y local do mesh com a velocidade atual.
 function orientToVelocity(mesh, vel){
   if(vel.lengthSq() < 0.0001) return;
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), vel.clone().normalize());
 }
-// ETAPA 8 (realismo): pequena explosão de sangue por soco eficaz - gotas
-// ALONGADAS na direção em que voam (rastro real, reorientado a cada frame
-// conforme a gravidade muda a trajetória - ver updateParticles), misturadas
-// com um respingo fino de partículas pequenas que se espalham rápido pra
-// todo lado e somem logo. Nada de bolinha uniforme parada no ar.
-function spawnBloodBurst(worldPos, dir){
+// ETAPA 8 (realismo): pequena explosão por soco eficaz - gotas ALONGADAS na
+// direção em que voam (rastro real, reorientado a cada frame conforme a
+// gravidade muda a trajetória - ver updateParticles), misturadas com um
+// respingo fino de partículas pequenas que se espalham rápido pra todo lado
+// e somem logo. Nada de bolinha uniforme parada no ar.
+// `bloodRatio` (0..1) controla a SUBSTÂNCIA: perto de 0 é só saliva/suor
+// (clara, translúcida, gotas menores); perto de 1 é sangue de verdade
+// (vermelho, mais opaco, gotas maiores) - ver cálculo nos pontos de chamada.
+function spawnBloodBurst(worldPos, dir, bloodRatio){
+  bloodRatio = bloodRatio==null ? 1 : THREE.MathUtils.clamp(bloodRatio,0,1);
   const dropCount = 5 + Math.floor(Math.random()*3);
   for(let i=0;i<dropCount;i++){
     const vel = dir.clone().multiplyScalar(0.5+Math.random()*1.0)
       .add(new THREE.Vector3((Math.random()-0.5)*1.0, Math.random()*1.2, (Math.random()-0.5)*1.0));
-    const geo = new THREE.SphereGeometry(0.009+Math.random()*0.007, 6,6);
-    const mat = new THREE.MeshBasicMaterial({color: Math.random()<0.5?0x8a0000:0x6e0000, transparent:true});
+    const liquidCol = (Math.random()<0.5?SPIT_COLOR_A:SPIT_COLOR_B);
+    const bloodCol = (Math.random()<0.5?BLOOD_COLOR_A:BLOOD_COLOR_B);
+    const col = liquidCol.clone().lerp(bloodCol, bloodRatio);
+    const sizeMult = THREE.MathUtils.lerp(0.72, 1.0, bloodRatio); // gota de saliva é um pouco menor que a de sangue
+    const geo = new THREE.SphereGeometry((0.009+Math.random()*0.007)*sizeMult, 6,6);
+    const mat = new THREE.MeshBasicMaterial({color: col, transparent:true});
     const p = new THREE.Mesh(geo, mat);
     p.position.copy(worldPos);
     orientToVelocity(p, vel);
     p.scale.set(1, 1.4+vel.length()*1.1, 1); // esticado na direção do voo desde o primeiro frame
     scene.add(p);
-    activeParticles.push({mesh:p, vel, life:0.85, maxLife:0.85, streak:true});
+    // saliva é bem mais translúcida que sangue (opacidade máxima menor)
+    activeParticles.push({mesh:p, vel, life:0.85, maxLife:0.85, streak:true, maxOpacity: THREE.MathUtils.lerp(0.45,1,bloodRatio)});
   }
   const mistCount = 9 + Math.floor(Math.random()*5);
   for(let i=0;i<mistCount;i++){
-    const geo = new THREE.SphereGeometry(0.005+Math.random()*0.006, 4,4);
-    const mat = new THREE.MeshBasicMaterial({color:0x9a1010, transparent:true});
+    const mistCol = BLOOD_MIST_SPIT.clone().lerp(BLOOD_MIST_BLOOD, bloodRatio);
+    const sizeMult = THREE.MathUtils.lerp(0.8, 1.0, bloodRatio);
+    const geo = new THREE.SphereGeometry((0.005+Math.random()*0.006)*sizeMult, 4,4);
+    const mat = new THREE.MeshBasicMaterial({color: mistCol, transparent:true});
     const p = new THREE.Mesh(geo, mat);
     p.position.copy(worldPos);
     scene.add(p);
@@ -1998,7 +2414,7 @@ function spawnBloodBurst(worldPos, dir){
     const spread = new THREE.Vector3((Math.random()-0.5)*2, (Math.random()-0.2)*2, (Math.random()-0.5)*2).normalize();
     const vel = dir.clone().multiplyScalar(0.3).addScaledVector(spread, 1.4+Math.random()*1.3);
     const life = 0.32+Math.random()*0.16;
-    activeParticles.push({mesh:p, vel, life, maxLife:life});
+    activeParticles.push({mesh:p, vel, life, maxLife:life, maxOpacity: THREE.MathUtils.lerp(0.5,1,bloodRatio)});
   }
 }
 function spawnFloorBloodPool(pos){
@@ -2035,7 +2451,7 @@ function buildMMAGlove(scale, padColor, skinMaterial){
   // ETAPA VISUAL: leve clearcoat no couro da luva - dá aquele brilho
   // "molhado" sutil que luva de MMA de verdade tem sob holofote
   const padMat = new THREE.MeshPhysicalMaterial({color:padColor, roughness:0.4, clearcoat:0.5, clearcoatRoughness:0.3});
-  const skinMat = skinMaterial || new THREE.MeshStandardMaterial({color:0xc9906a, roughness:0.7});
+  const skinMat = skinMaterial || new THREE.MeshStandardMaterial({color:0xb87a5c, roughness:0.7});
 
   // faixa/cano que prende a luva no pulso
   const wristBand = new THREE.Mesh(new THREE.CylinderGeometry(0.026*scale,0.03*scale,0.02*scale,10), padMat);
@@ -2091,10 +2507,29 @@ function buildMMAGlove(scale, padColor, skinMaterial){
 }
 
 /* ------------------------------ Controladores/mãos ------------------------------ */
+// ETAPA VISUAL: pele do JOGADOR (mão/dedos/braço) - antes era uma cor sólida
+// lisa (0xc9906a, sem textura nenhuma). Agora usa a mesma técnica da pele do
+// adversário: textura procedural (poros/manchas) + bump map (relevo real) +
+// um toque de clearcoat (brilho/suor sob luz) - só que num tom MORENO mais
+// escurecido, como pedido. Um material só, reaproveitado na luva inteira E
+// no braço/cotovelo (`buildPlayerArms`), pra pele ficar igual e sem costura
+// entre mão e braço.
+const PLAYER_SKIN_COLOR = 0x8a5a3a;
+let playerSkinMat = null;
+function getPlayerSkinMat(){
+  if(!playerSkinMat){
+    playerSkinMat = new THREE.MeshPhysicalMaterial({
+      color:0xffffff, map:createSkinTexture(PLAYER_SKIN_COLOR),
+      bumpMap:createSkinBumpTexture(), bumpScale:0.0035,
+      roughness:0.5, clearcoat:0.22, clearcoatRoughness:0.35, metalness:0.02
+    });
+  }
+  return playerSkinMat;
+}
 function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl = renderer.xr.getController(i);
-    const glove = buildMMAGlove(1.0, 0xc9906a, null); // AJUSTE: cor de pele em vez do dorso vermelho de luva - a mão do jogador não deve ficar colorida
+    const glove = buildMMAGlove(1.0, PLAYER_SKIN_COLOR, getPlayerSkinMat()); // pele morena texturizada, sem costura entre dorso e resto da mão
     ctrl.add(glove);
     scene.add(ctrl);
     controllerGroups.push(ctrl);
@@ -2115,15 +2550,26 @@ function buildControllers(){
    virar uma linha reta perfeita entre ombro e mão - a mesma ideia usada no
    braço do adversário (que é todo animado, nunca sensoreado). */
 function buildPlayerArms(){
-  const mat = new THREE.MeshStandardMaterial({color:0xc9906a, roughness:0.7});
+  const mat = getPlayerSkinMat(); // mesma pele morena texturizada/com brilho usada na luva - sem costura entre braço e mão
   for(let ci=0; ci<2; ci++){
     const upperMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.05,1,8), mat);
     const foreMesh  = new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.045,1,8), mat);
     const elbowMesh = new THREE.Mesh(new THREE.SphereGeometry(0.05,10,10), mat);
+    upperMesh.castShadow = true; upperMesh.receiveShadow = true;
+    foreMesh.castShadow = true; foreMesh.receiveShadow = true;
+    elbowMesh.castShadow = true; elbowMesh.receiveShadow = true;
     upperMesh.userData.baseLength = 1;
     foreMesh.userData.baseLength = 1;
     scene.add(upperMesh); scene.add(foreMesh); scene.add(elbowMesh);
-    playerArms[ci] = {upperMesh, foreMesh, elbowMesh, sign: ci===0?-1:1};
+    playerArms[ci] = {
+      upperMesh, foreMesh, elbowMesh, sign: ci===0?-1:1,
+      // ETAPA CORREÇÃO (cotovelo bugado): guarda a direção de dobra do
+      // cotovelo do frame anterior, pra manter continuidade quando a IK
+      // passa perto da singularidade (ver solveElbowIK) - sem isso o
+      // cotovelo podia "pipocar" pro lado oposto, ficando bem fora de onde
+      // o cotovelo de verdade estaria.
+      prevElbowDir: new THREE.Vector3(ci===0?-1:1, -0.7, 0.4).normalize(),
+    };
   }
 }
 
@@ -2141,7 +2587,17 @@ function orientSegment(mesh, a, b){
 // mão real e os dois comprimentos fixos (UPPER_ARM_LEN/FOREARM_LEN), acha o
 // ponto de dobra que respeita os dois comprimentos AO MESMO TEMPO - é assim
 // que um cotovelo de verdade se comporta (não é só a metade do caminho).
-function solveElbowIK(shoulder, hand, sign, out){
+// CORREÇÃO (cotovelo bugado/fora do lugar): antes a referência de "pra onde
+// dobra" (`tmpElbowBendHint`) era um vetor FIXO no mundo - girando o corpo
+// (ou só a mão passando perto dessa direção) fazia o produto vetorial
+// degenerar (quase zero) e o eixo de dobra podia pular pro lado OPOSTO de um
+// frame pro outro, jogando o cotovelo pra uma posição impossível, longe do
+// cotovelo real. Duas correções: (1) o hint agora gira junto com o corpo do
+// jogador (`bodyYawQuat`, o mesmo yaw usado pro ombro) em vez de ficar preso
+// ao mundo; (2) perto da singularidade, em vez de resetar pra um eixo
+// arbitrário, reaproveita a direção de dobra do FRAME ANTERIOR - garante que
+// o cotovelo sempre continua de onde estava, girando suave, nunca teleporta.
+function solveElbowIK(shoulder, hand, sign, bodyYawQuat, prevElbowDir, out){
   tmpElbowDirToHand.subVectors(hand, shoulder);
   // não deixa a distância passar da soma dos dois ossos (braço todo
   // esticado é o limite físico) nem chegar em zero (evita divisão feia)
@@ -2159,17 +2615,24 @@ function solveElbowIK(shoulder, hand, sign, out){
 
   // eixo de dobra: perpendicular à linha ombro->mão, escolhido pra sempre
   // dobrar o cotovelo pra fora/baixo/trás (postura natural de luta), não
-  // pra dentro/cima (que ficaria estranho)
-  tmpElbowBendHint.set(sign, -0.4, 0.6).normalize();
+  // pra dentro/cima (que ficaria estranho) - relativo ao CORPO do jogador.
+  tmpElbowBendHint.set(sign, -0.4, 0.6).normalize().applyQuaternion(bodyYawQuat);
   tmpElbowRotAxis.crossVectors(tmpElbowDirToHand, tmpElbowBendHint);
+  if(tmpElbowRotAxis.lengthSq() < 1e-4){
+    // quase paralelo ao hint - usa a direção de dobra do frame anterior
+    // como referência (continuidade), em vez de arriscar um flip pro lado
+    // errado.
+    tmpElbowRotAxis.crossVectors(tmpElbowDirToHand, prevElbowDir.lengthSq()>1e-6 ? prevElbowDir : tmpElbowBendHint);
+  }
   if(tmpElbowRotAxis.lengthSq() < 1e-6) tmpElbowRotAxis.set(0,1,0);
   tmpElbowRotAxis.normalize();
 
   out.copy(tmpElbowDirToHand).applyAxisAngle(tmpElbowRotAxis, angleA);
+  prevElbowDir.copy(out); // guarda a direção real (normalizada, antes de escalar) pro próximo frame
   out.multiplyScalar(UPPER_ARM_LEN).add(shoulder);
 }
 
-function updatePlayerArms(){
+function updatePlayerArms(dt){
   camera.getWorldPosition(tmpVec3Head);
   camera.getWorldQuaternion(tmpQuatHead);
   // só o giro horizontal (yaw) da cabeça - senão o ombro balançaria toda vez
@@ -2189,11 +2652,25 @@ function updatePlayerArms(){
     // cotovelo real: IK de 2 ossos com comprimento fixo (ver solveElbowIK) -
     // fica onde o cotovelo de verdade estaria, no tamanho certo, em vez de
     // encolher junto quando a mão está perto do ombro (guarda, por exemplo).
-    solveElbowIK(tmpVec3Shoulder, tmpVec3Hand, arm.sign, tmpVec3Mid);
+    solveElbowIK(tmpVec3Shoulder, tmpVec3Hand, arm.sign, tmpQuatYaw, arm.prevElbowDir, tmpVec3Mid);
 
-    arm.elbowMesh.position.copy(tmpVec3Mid);
-    orientSegment(arm.upperMesh, tmpVec3Shoulder, tmpVec3Mid);
-    orientSegment(arm.foreMesh, tmpVec3Mid, tmpVec3Hand);
+    // ETAPA CORREÇÃO: suaviza a posição visual do cotovelo (filtro passa-baixa
+    // no tempo) em vez de saltar direto pra solução da IK a cada frame - isso
+    // absorve qualquer troca brusca de lado da dobra (perto de uma
+    // singularidade) como um giro rápido porém CONTÍNUO, nunca um teleporte.
+    // Sem suavização nenhuma o cotovelo já fica no lugar certo na maior
+    // parte do tempo, mas processa em degraus de 1 frame ao virar a mão
+    // rápido - com isto, some de vez o "cotovelo impossível".
+    const ELBOW_SMOOTH_TAU = 0.045; // segundos - suave o bastante pra sumir com o "pulo", rápido o bastante pra não atrasar o soco
+    const smoothT = 1 - Math.exp(-Math.max(dt||0.016,0.0001)/ELBOW_SMOOTH_TAU);
+    if(!arm.elbowSmoothInit){
+      arm.elbowMesh.position.copy(tmpVec3Mid);
+      arm.elbowSmoothInit = true;
+    } else {
+      arm.elbowMesh.position.lerp(tmpVec3Mid, smoothT);
+    }
+    orientSegment(arm.upperMesh, tmpVec3Shoulder, arm.elbowMesh.position);
+    orientSegment(arm.foreMesh, arm.elbowMesh.position, tmpVec3Hand);
   }
 }
 
@@ -2272,29 +2749,44 @@ const opp = {
   fallBaseQuat: new THREE.Quaternion(),
   fallEndState: 'down',
   getUpProgress: 0,               // 0->1: ele foi empurrando o corpo pra levantar
-  getUpFrom: new THREE.Quaternion(),
-  getUpElapsed: 0,
-  // NOVO: qual braço planta a mão no chão nesta tentativa de levantar (1 =
-  // opp.lArmPivot, -1 = opp.rArmPivot) - sorteado a cada tentativa em
-  // `startGettingUp`, pra não ser sempre o mesmo lado.
-  handPlantSign: 1,
-  // NOVO: tempo até a próxima tentativa de "rolar pra longe" no chão (ver
-  // ramo 'down' de updateOpponentAI) - só conta enquanto ele estiver livre
-  // (sem ser segurado nem ter peso em cima).
-  rollAwayCooldown: 1.5,
+  getUpElapsed: 0,                // PASSO 6: tempo total tentando ficar de pé sozinho (trava de segurança)
+  getUpHoldTimer: 0,              // PASSO 6: tempo seguido já "de pé o suficiente" (debounce antes de confirmar 'standing')
 
   // --- ragdoll físico (Ammo) ---
   ragdoll: null,          // {hip,torso,head,legL,legR} -> {body, mesh, dynamic} (ver buildOpponentRagdoll)
   ragdollActive: false,   // true depois que startPhysicsFall soltou o ragdoll de verdade
   fallSettleTimer: 0,     // conta o tempo desde a soltura, pra saber quando ele "assentou" no chão
+
+  // PASSO 5: alvo (em radianos, mesmo espaço "local ao tronco" de sempre -
+  // eixo X = flexão do ombro pra frente/trás, eixo Z = abertura lateral) que
+  // a IA de guarda/soco escreve; quem PERSEGUE esse alvo de verdade com
+  // torque físico é o "músculo" do ombro (ver updateArmMuscles), não mais a
+  // IA escrevendo a rotação do braço direto - senão some no frame seguinte,
+  // porque o braço já é um corpo de ragdoll dinâmico (ver PASSO 1).
+  armTargetLocal: { L: {x:-0.1, z:0}, R: {x:-0.1, z:0} }, // -0.1 = mesma pose de descanso de buildArm
 };
+
+// ETAPA VISUAL (reforma do corpo do inimigo): a métrica de tamanho usada pra
+// remodelar o corpo abaixo é a MESMA luva/mão do jogador (`buildMMAGlove`,
+// ver acima) - ela tem por volta de 0.08m do punho até a ponta dos dedos e
+// ~0.055m de largura. O tronco/músculos/rosto foram redesenhados tomando
+// essa mão já visível no jogo como referência (ex.: a largura do peitoral
+// fica perto de 2x a largura da mão do jogador), mantendo a MESMA escala
+// geral de sempre (alcance de soco, distâncias de agarrão etc. não mudam) -
+// só a FORMA fica mais realista e menos "encaixe de peças".
+const HAND_REF_LEN = 0.08;   // comprimento aprox. da mão/luva do jogador (métrica de escala)
+const HAND_REF_WIDTH = 0.055;
 
 function buildOpponent(){
   // ETAPA VISUAL: pele com bump map (relevo real dos poros/marcas reagindo à
   // luz) + um toque de clearcoat (a "capa" brilhante de suor/oleosidade que
   // pele de verdade tem sob holofote) em vez do material chapado de antes.
+  // ETAPA VISUAL (pedido do usuário): pele um pouco mais escura e mais
+  // corada (tom mais avermelhado/quente que antes) + manchas de vermelhidão
+  // natural (flush=true, ver createSkinTexture) - só no inimigo, a pele do
+  // jogador (PLAYER_SKIN_COLOR) não muda.
   const skinMat = new THREE.MeshPhysicalMaterial({
-    color:0xffffff, map:createSkinTexture(0xc9906a),
+    color:0xffffff, map:createSkinTexture(0xb87a5c, true),
     bumpMap:createSkinBumpTexture(), bumpScale:0.0035,
     roughness:0.55, clearcoat:0.18, clearcoatRoughness:0.4, metalness:0.02
   });
@@ -2346,25 +2838,198 @@ function buildOpponent(){
     ankle.position.set(0, -0.425, 0.02); // ponta de baixo da perna, também local ao mesh da perna
     leg.add(ankle);
     opp.legAnkles[sign===1?'L':'R'] = ankle;
+
+    // ETAPA VISUAL: pé - faltava completamente (perna terminava seca no
+    // tornozelo, flutuando sobre o tapete). Descalço, estilo MMA de verdade -
+    // um bloco alongado pro peito do pé + uma ponta arredondada pros dedos.
+    const footTop = new THREE.Mesh(new THREE.BoxGeometry(0.075,0.045,0.15), skinMat);
+    footTop.position.set(0,-0.445,0.075);
+    footTop.castShadow = true; footTop.receiveShadow = true;
+    leg.add(footTop);
+    const toes = new THREE.Mesh(new THREE.SphereGeometry(0.038,10,6), skinMat);
+    toes.scale.set(1.0,0.55,0.85);
+    toes.position.set(0,-0.448,0.145);
+    toes.castShadow = true; toes.receiveShadow = true;
+    leg.add(toes);
+
+    // ETAPA VISUAL: joelho e panturrilha - a perna era um cilindro liso de
+    // cima a baixo (sem nenhum volume no meio). Joelho na frente (mesma
+    // posição do marcador de agarre `knee`) + panturrilha atrás, mais pra
+    // baixo - dá a quebra de silhueta real que uma perna de verdade tem.
+    const kneeCap = new THREE.Mesh(new THREE.SphereGeometry(0.032,10,8), skinMat);
+    kneeCap.scale.set(1.0,0.85,0.7);
+    kneeCap.position.set(0,0,0.045);
+    kneeCap.castShadow = true; kneeCap.receiveShadow = true;
+    leg.add(kneeCap);
+    const calf = new THREE.Mesh(new THREE.SphereGeometry(0.052,10,8), skinMat);
+    calf.scale.set(0.95,1.15,0.85);
+    calf.position.set(0,-0.13,-0.03);
+    calf.castShadow = true; calf.receiveShadow = true;
+    leg.add(calf);
   });
 
   opp.torsoPivot = new THREE.Group();
   opp.torsoPivot.position.set(0,0.1,0);
   opp.hip.add(opp.torsoPivot);
 
-  opp.torsoMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.20,0.24,0.56,20), skinMat);
+  // ETAPA VISUAL (reforma do corpo): antes o tronco era um cilindro reto
+  // (mesmo raio de cima a baixo, só um pouco mais largo embaixo) - lia como
+  // uma "lata", bem mais largo que um tronco real. Agora é UM SÓ perfil
+  // (LatheGeometry, silhueta contínua, não um monte de formas encaixadas)
+  // que afunila de verdade: cintura estreita, caixa torácica/peitoral mais
+  // largo no meio, e volta a estreitar perto do pescoço - o "V" de um
+  // lutador de verdade, e no total bem menos largo que a versão anterior.
+  const torsoProfile = [
+    new THREE.Vector2(0.148, -0.28), // cintura - encontra o quadril
+    new THREE.Vector2(0.156, -0.20), // abdômen baixo
+    new THREE.Vector2(0.168, -0.12), // abdômen alto / base das costelas
+    new THREE.Vector2(0.184, -0.04), // costelas
+    new THREE.Vector2(0.198,  0.04), // peitoral - ponto mais largo do tronco
+    new THREE.Vector2(0.200,  0.11), // topo do peitoral
+    new THREE.Vector2(0.188,  0.18), // clavícula
+    new THREE.Vector2(0.166,  0.24), // base do pescoço
+    new THREE.Vector2(0.148,  0.28), // topo, encaixe do pescoço
+  ];
+  const torsoGeo = new THREE.LatheGeometry(torsoProfile, 32);
+  torsoGeo.computeVertexNormals();
+  // ETAPA 9: material PRÓPRIO (clonado do skinMat, não compartilhado) só pro
+  // tronco - é ele que recebe vertexColors:true, pra permitir pintar sangue
+  // direto na pele deste mesh sem afetar pernas/braços/luvas, que continuam
+  // usando o skinMat original sem cor por vértice.
+  const torsoSkinMat = skinMat.clone();
+  torsoSkinMat.vertexColors = true;
+  torsoSkinMat.needsUpdate = true;
+  opp.torsoMesh = new THREE.Mesh(torsoGeo, torsoSkinMat);
   opp.torsoMesh.position.set(0,0.28,0);
   opp.torsoMesh.castShadow = true; opp.torsoMesh.receiveShadow = true;
   opp.torsoPivot.add(opp.torsoMesh);
+  initBloodPaint(opp.torsoMesh);
+
+  // ETAPA VISUAL: pelo esparso no peito - casca fina e transparente sobre o
+  // esterno (entre os peitorais), mesma técnica do stubble no queixo.
+  const chestHairMat = new THREE.MeshBasicMaterial({map:createChestHairTexture(), transparent:true, depthWrite:false});
+  const chestHair = new THREE.Mesh(new THREE.PlaneGeometry(0.16,0.20), chestHairMat);
+  chestHair.position.set(0,0.02,0.202);
+  opp.torsoMesh.add(chestHair);
+
+  // ETAPA VISUAL: cicatriz no tronco - corte antigo cicatrizado nas costelas,
+  // outra marca de lutador experiente (junto com a da sobrancelha e a orelha
+  // de couve-flor, dá mais história/individualidade ao personagem).
+  const torsoScarMat = new THREE.MeshStandardMaterial({color:0xc79488, roughness:0.5});
+  const torsoScar = new THREE.Mesh(new THREE.BoxGeometry(0.004,0.06,0.006), torsoScarMat);
+  torsoScar.position.set(-0.17,-0.02,0.09);
+  torsoScar.rotation.z = 0.5;
+  opp.torsoMesh.add(torsoScar);
+
+  // ETAPA VISUAL: relevo muscular DE VERDADE (geometria, não só textura) -
+  // peitoral, abdômen (six-pack) e oblíquos como pequenos volumes por cima
+  // do tronco, no mesmo material de pele (sem costura visível), fundidos
+  // ~60% dentro da silhueta pra ler como músculo colado no corpo, não como
+  // bolhas grudadas por fora. `frontZ`≈torso mais largo é a direção das
+  // luvas apontando (+Z).
+  const pecGeo = new THREE.SphereGeometry(0.078, 12, 8);
+  [-1,1].forEach(sign=>{
+    const pec = new THREE.Mesh(pecGeo, skinMat);
+    pec.scale.set(1.1, 0.85, 0.55);
+    pec.position.set(0.095*sign, 0.10, 0.145);
+    pec.castShadow = true; pec.receiveShadow = true;
+    opp.torsoMesh.add(pec);
+  });
+  const abGeo = new THREE.SphereGeometry(0.034, 8, 6);
+  [-0.06, -0.14, -0.215].forEach(y=>{
+    [-1,1].forEach(sign=>{
+      const ab = new THREE.Mesh(abGeo, skinMat);
+      ab.scale.set(1.25, 0.8, 0.55);
+      ab.position.set(0.05*sign, y, 0.155 + (y>-0.1?0.01:0));
+      ab.castShadow = true; ab.receiveShadow = true;
+      opp.torsoMesh.add(ab);
+    });
+  });
+  const obliqueGeo = new THREE.SphereGeometry(0.05, 8, 6);
+  [-1,1].forEach(sign=>{
+    const obl = new THREE.Mesh(obliqueGeo, skinMat);
+    obl.scale.set(0.6, 1.3, 0.7);
+    obl.position.set(0.155*sign, -0.06, 0.03);
+    obl.castShadow = true; obl.receiveShadow = true;
+    opp.torsoMesh.add(obl);
+  });
+
+  // ETAPA VISUAL (mais realismo, pedido do usuário): umbigo - pequeno
+  // afundamento no meio do abdômen, ausente até agora (tronco lia "liso"
+  // ali). Usa um material mais escuro (sombra do próprio umbigo), não a
+  // pele lisa.
+  const navelMat = new THREE.MeshStandardMaterial({color:0x6b4632, roughness:0.75});
+  const navel = new THREE.Mesh(new THREE.SphereGeometry(0.008,8,6), navelMat);
+  navel.position.set(0,-0.165,0.168);
+  opp.torsoMesh.add(navel);
+
+  // ETAPA VISUAL: mamilos - detalhe básico de anatomia que faltava no
+  // peitoral (superfície lisa demais antes).
+  [-1,1].forEach(sign=>{
+    const nipple = new THREE.Mesh(new THREE.SphereGeometry(0.007,8,6), navelMat);
+    nipple.position.set(0.095*sign, 0.10, 0.208);
+    opp.torsoMesh.add(nipple);
+  });
+
+  // ETAPA VISUAL: clavícula - duas cristas finas saindo do esterno até cada
+  // ombro (acompanham o ponto "clavícula" do perfil do tronco, y=0.18) - sem
+  // elas o peito emendava direto no pescoço sem nenhuma quebra óssea real.
+  [-1,1].forEach(sign=>{
+    const clavicle = new THREE.Mesh(new THREE.CylinderGeometry(0.009,0.007,0.13,8), skinMat);
+    clavicle.position.set(0.075*sign, 0.175, 0.12);
+    clavicle.rotation.z = 0.55*sign;
+    clavicle.rotation.x = 0.25;
+    clavicle.castShadow = true; clavicle.receiveShadow = true;
+    opp.torsoMesh.add(clavicle);
+  });
+
+  // ETAPA VISUAL: trapézio - volume muscular na base do pescoço, subindo
+  // pro ombro (antes o pescoço "flutuava" fino demais em cima do tronco
+  // largo, sem essa transição de músculo real).
+  [-1,1].forEach(sign=>{
+    const trap = new THREE.Mesh(new THREE.SphereGeometry(0.05,10,8), skinMat);
+    trap.scale.set(0.75,1.0,0.65);
+    trap.position.set(0.12*sign, 0.235, 0.02);
+    trap.rotation.z = 0.3*sign;
+    trap.castShadow = true; trap.receiveShadow = true;
+    opp.torsoMesh.add(trap);
+  });
 
   opp.neck = new THREE.Group();
   opp.neck.position.set(0,0.56,0);
   opp.torsoPivot.add(opp.neck);
 
-  opp.head = new THREE.Mesh(new THREE.SphereGeometry(0.135,32,32), skinMat);
+  // ETAPA VISUAL: pomo de adão - pequeno volume na frente do pescoço,
+  // ausente até agora (pescoço era só um grupo vazio, sem carne nenhuma
+  // entre o tronco e a cabeça).
+  const adamsApple = new THREE.Mesh(new THREE.SphereGeometry(0.014,8,6), skinMat);
+  adamsApple.scale.set(0.8,1.15,0.75);
+  adamsApple.position.set(0,-0.015,0.10);
+  opp.neck.add(adamsApple);
+
+  // ETAPA VISUAL: tendões do pescoço (esternocleidomastóideo) - duas cristas
+  // finas saindo da base do pescoço até atrás da orelha, de cada lado. Sem
+  // elas o pescoço era um cilindro liso demais, sem nenhuma definição.
+  [-1,1].forEach(sign=>{
+    const tendon = new THREE.Mesh(new THREE.CylinderGeometry(0.006,0.009,0.11,6), skinMat);
+    tendon.position.set(0.045*sign,0.01,0.03);
+    tendon.rotation.z = 0.45*sign;
+    tendon.rotation.x = -0.35;
+    opp.neck.add(tendon);
+  });
+
+  // ETAPA 9: mesmo esquema do tronco - material próprio com vertexColors
+  // pra receber pintura de sangue na cabeça sem mexer no skinMat compartilhado
+  // (usado pelos detalhes do rosto em buildFace, que continuam sem sangue,
+  // igual já era com os decalques antigos).
+  const headSkinMat = skinMat.clone();
+  headSkinMat.vertexColors = true;
+  headSkinMat.needsUpdate = true;
+  opp.head = new THREE.Mesh(new THREE.SphereGeometry(0.135,32,32), headSkinMat);
   opp.head.position.set(0,0.14,0);
   opp.head.castShadow = true; opp.head.receiveShadow = true;
   opp.neck.add(opp.head);
+  initBloodPaint(opp.head);
   buildFace(opp.head, skinMat);
 
   // braços (ombro -> antebraço -> luva)
@@ -2376,12 +3041,37 @@ function buildOpponent(){
     upper.position.set(0,-0.14,0);
     upper.castShadow = true; upper.receiveShadow = true;
     shoulder.add(upper);
+    // ETAPA VISUAL: deltoide - capa arredondada no topo do ombro (antes o
+    // braço saía reto do tronco, sem essa "bola" de músculo característica
+    // do ombro visto de fora).
+    const deltoid = new THREE.Mesh(new THREE.SphereGeometry(0.052,10,8), skinMat);
+    deltoid.scale.set(1.0,0.9,0.95);
+    deltoid.position.set(0,0.01,0);
+    deltoid.castShadow = true; deltoid.receiveShadow = true;
+    shoulder.add(deltoid);
+    // ETAPA VISUAL: bíceps - um volume só, colado no braço (mesmo material,
+    // sem costura), em vez do cilindro liso de antes.
+    const bicep = new THREE.Mesh(new THREE.SphereGeometry(0.045,10,8), skinMat);
+    bicep.scale.set(1.05,1.25,0.85);
+    bicep.position.set(0,0.03,0.032);
+    bicep.castShadow = true; bicep.receiveShadow = true;
+    upper.add(bicep);
     const elbow = new THREE.Group();
     elbow.position.set(0,-0.28,0);
     shoulder.add(elbow);
     const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.045,0.26,16), skinMat);
     fore.position.set(0,-0.13,0.02);
     fore.castShadow = true; fore.receiveShadow = true;
+    // ETAPA VISUAL: veias sutis no antebraço - finas, levemente salientes,
+    // tom mais escuro/azulado que a pele - detalhe de lutador definido que
+    // faltava (antebraço liso demais antes).
+    const veinMat = new THREE.MeshStandardMaterial({color:0x5a4a48, roughness:0.6});
+    [-0.014, 0.016].forEach((ox,vi)=>{
+      const vein = new THREE.Mesh(new THREE.CylinderGeometry(0.0025,0.0025,0.17,6), veinMat);
+      vein.position.set(ox, -0.04+vi*0.01, 0.044);
+      vein.rotation.z = 0.06*(vi===0?1:-1);
+      fore.add(vein);
+    });
     elbow.add(fore);
     const glove = buildMMAGlove(1.3, 0x7a0000, skinMat); // mesma luva de MMA do jogador, um pouco maior, usando a pele texturizada dele
     glove.traverse(o=>{ if(o.isMesh){ o.castShadow = true; o.receiveShadow = true; } });
@@ -2400,19 +3090,71 @@ function buildOpponent(){
 
   opp.facingBase.copy(opp.root.quaternion);
 }
+// NOVO (mais realismo no inimigo): textura de "barba por fazer" (stubble) -
+// canvas TRANSPARENTE com pontinhos escuros de densidade/opacidade
+// variável, imitando pelo curto crescendo na régio do queixo/mandíbula.
+// Aplicada como uma casca fina por cima do queixo/mandíbula (ver buildFace),
+// não substitui o material de pele - a pele continua aparecendo nos vãos
+// entre os pontinhos, igual barba por fazer de verdade.
+function createStubbleTexture(){
+  const S = 256;
+  const c = document.createElement('canvas'); c.width=S; c.height=S;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,S,S);
+  for(let i=0;i<2600;i++){
+    const x = Math.random()*S, y = Math.random()*S;
+    const a = 0.25+Math.random()*0.45;
+    ctx.fillStyle = `rgba(35,26,22,${a})`;
+    ctx.fillRect(x,y,1.1,1.1);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+// NOVO (mais realismo no inimigo): pelo esparso no peito - canvas
+// TRANSPARENTE com fiapos curtos e finos, concentrados mais no centro
+// (esterno) e rareando nas bordas, igual pelo de peito de verdade. Aplicado
+// como uma casca fina sobre o esterno (ver buildOpponent), mesma técnica do
+// stubble no queixo.
+function createChestHairTexture(){
+  const S = 256;
+  const c = document.createElement('canvas'); c.width=S; c.height=S;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,S,S);
+  const cx = S/2, cy = S*0.55;
+  for(let i=0;i<900;i++){
+    const x = cx + (Math.random()-0.5)*S*0.85;
+    const y = cy + (Math.random()-0.5)*S*0.95;
+    const distF = 1 - Math.min(1, Math.hypot(x-cx,(y-cy)*0.7)/(S*0.42));
+    if(Math.random() > distF*0.9+0.05) continue;
+    const len = 4+Math.random()*7;
+    const ang = Math.PI/2 + (Math.random()-0.5)*0.6;
+    ctx.strokeStyle = `rgba(28,20,16,${0.3+Math.random()*0.35})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+Math.cos(ang)*len, y+Math.sin(ang)*len); ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
 function buildFace(headMesh, skinMat){
   const darkMat = new THREE.MeshStandardMaterial({color:0x2a1810, roughness:0.6});
-  const mouthMat = new THREE.MeshStandardMaterial({color:0x7a3030, roughness:0.7});
+  const mouthMat = new THREE.MeshStandardMaterial({color:0x8a4040, roughness:0.55});
+  // ETAPA VISUAL: lábio inferior um tom mais claro/rosado que o superior -
+  // lábio de verdade não é uma cor só, o de baixo pega mais luz/sangue.
+  const lipLowerMat = new THREE.MeshStandardMaterial({color:0x9a4a48, roughness:0.5});
+  const nostrilMat = new THREE.MeshStandardMaterial({color:0x3a241a, roughness:0.8});
   const eyeWhiteMat = new THREE.MeshStandardMaterial({color:0xf0ece0, roughness:0.4});
-  // ETAPA 1: nariz e queixo agora usam o mesmo material com textura de pele
-  // do resto do corpo (opp.skinMat), em vez de uma cor sólida à parte.
+  const pupilMat = new THREE.MeshStandardMaterial({color:0x0a0806, roughness:0.3});
+  // ETAPA 1: nariz e queixo usam o mesmo material com textura de pele do
+  // resto do corpo (opp.skinMat), em vez de uma cor sólida à parte.
   const noseMat = skinMat;
 
   const R = 0.135; // raio da cabeça
   const frontZ = R*0.86; // "frente" do rosto (mesmo lado que as luvas apontam, +z)
 
-  // olhos (branco + íris) - agrupados por olho pra dar pra animar "cerrando"
-  // (esmagando a escala vertical do grupo) quando leva um soco fraco.
+  // olhos (branco + íris + pupila) - agrupados por olho pra dar pra animar
+  // "cerrando" (esmagando a escala vertical do grupo) quando leva um soco fraco.
   opp.eyeGroups = [];
   [-1,1].forEach(sign=>{
     const eyeGroup = new THREE.Group();
@@ -2421,33 +3163,205 @@ function buildFace(headMesh, skinMat){
     const eyeWhite = new THREE.Mesh(new THREE.SphereGeometry(0.017,8,8), eyeWhiteMat);
     eyeWhite.position.set(0, 0, frontZ*0.98);
     eyeGroup.add(eyeWhite);
-    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.009,8,8), darkMat);
+    const iris = new THREE.Mesh(new THREE.SphereGeometry(0.0095,8,8), darkMat);
     iris.position.set(0, 0, frontZ*1.06);
     eyeGroup.add(iris);
+    // ETAPA VISUAL: pupila - pontinho bem escuro por cima da íris, dá o
+    // brilho/foco real do olho (sem ela a íris lia como uma bolinha lisa).
+    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.004,6,6), pupilMat);
+    pupil.position.set(0, 0, frontZ*1.09);
+    eyeGroup.add(pupil);
+    // ETAPA VISUAL: pálpebra/vinco acima do olho - uma faixa fina curva que
+    // dá o "degrau" real entre olho e sobrancelha (antes o olho saía direto
+    // pra pele lisa da cabeça).
+    const lid = new THREE.Mesh(new THREE.SphereGeometry(0.02,8,6,0,Math.PI*2,0,Math.PI/2.2), skinMat);
+    lid.position.set(0, 0.008, frontZ*0.99);
+    lid.rotation.x = Math.PI;
+    lid.scale.set(1.15,0.55,0.9);
+    eyeGroup.add(lid);
     opp.eyeGroups.push(eyeGroup);
-    // sobrancelha
-    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.012,0.012), darkMat);
-    brow.position.set(0.045*sign, 0.045, frontZ*0.95);
-    brow.rotation.z = -0.15*sign;
-    headMesh.add(brow);
+    // ETAPA VISUAL: sobrancelha em dois segmentos angulados (arco real) em
+    // vez de uma barra reta única - a parte interna sobe suave, a externa
+    // desce, formando um arco de sobrancelha de verdade.
+    const browIn = new THREE.Mesh(new THREE.BoxGeometry(0.026,0.011,0.011), darkMat);
+    browIn.position.set((0.03)*sign, 0.043, frontZ*0.96);
+    browIn.rotation.z = -0.05*sign;
+    headMesh.add(browIn);
+    const browOut = new THREE.Mesh(new THREE.BoxGeometry(0.026,0.010,0.010), darkMat);
+    browOut.position.set((0.055)*sign, 0.038, frontZ*0.93);
+    browOut.rotation.z = -0.42*sign;
+    headMesh.add(browOut);
   });
 
-  // nariz
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.02,0.045,6), noseMat);
-  nose.position.set(0,-0.01,frontZ*1.08);
-  nose.rotation.x = Math.PI/2.1;
-  headMesh.add(nose);
+  // ETAPA VISUAL: nariz em duas partes (ponte + ponta), não um cone só - dá
+  // volume real de perfil - mais duas narinas (sombra escura embaixo) que
+  // criam a sombra que faltava no nariz de antes.
+  const noseBridge = new THREE.Mesh(new THREE.CylinderGeometry(0.011,0.016,0.05,8), noseMat);
+  noseBridge.position.set(0,0.025,frontZ*1.02);
+  noseBridge.rotation.x = 0.28;
+  // ETAPA VISUAL: nariz levemente desviado (quebrado) - detalhe clássico de
+  // lutador, um pequeno desalinhamento na ponte em vez do nariz perfeitamente
+  // reto/simétrico de antes.
+  noseBridge.rotation.z = 0.09;
+  headMesh.add(noseBridge);
+  const noseTip = new THREE.Mesh(new THREE.SphereGeometry(0.019,10,8), noseMat);
+  noseTip.position.set(0.004,-0.008,frontZ*1.10);
+  noseTip.scale.set(1,0.85,1.05);
+  headMesh.add(noseTip);
+  [-1,1].forEach(sign=>{
+    const nostril = new THREE.Mesh(new THREE.SphereGeometry(0.0055,6,6), nostrilMat);
+    nostril.position.set(0.009*sign,-0.017,frontZ*1.12);
+    headMesh.add(nostril);
+  });
 
-  // boca
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.014,0.012), mouthMat);
-  mouth.position.set(0,-0.055,frontZ*0.99);
-  headMesh.add(mouth);
+  // ETAPA VISUAL: boca com lábio superior e inferior separados (cada um com
+  // volume próprio) + um traço fino mais escuro na fenda entre eles - antes
+  // era uma única caixa achatada, sem volume de lábio nenhum.
+  const upperLip = new THREE.Mesh(new THREE.BoxGeometry(0.052,0.011,0.014), mouthMat);
+  upperLip.position.set(0,-0.048,frontZ*1.00);
+  headMesh.add(upperLip);
+  const lowerLip = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.015,0.016), lipLowerMat);
+  lowerLip.position.set(0,-0.063,frontZ*1.005);
+  headMesh.add(lowerLip);
+  const mouthCrease = new THREE.Mesh(new THREE.BoxGeometry(0.05,0.004,0.012), darkMat);
+  mouthCrease.position.set(0,-0.0555,frontZ*1.01);
+  headMesh.add(mouthCrease);
 
-  // mandíbula/queixo (leve volume)
-  const jaw = new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8), skinMat);
-  jaw.position.set(0,-0.075,frontZ*0.55);
-  jaw.scale.set(1,0.7,0.8);
-  headMesh.add(jaw);
+  // ETAPA VISUAL: queixo PROJETADO pra frente de verdade (bem mais saliente
+  // que a "bochecha" arredondada de antes, que quase não aparecia de
+  // perfil) + mandíbula lateral separada, mais larga, pra dar o contorno
+  // quadrado de queixo de lutador visto de frente.
+  const chin = new THREE.Mesh(new THREE.SphereGeometry(0.042,10,8), skinMat);
+  chin.position.set(0,-0.085,frontZ*0.98);
+  chin.scale.set(0.95,0.62,1.0);
+  headMesh.add(chin);
+  [-1,1].forEach(sign=>{
+    const jawSide = new THREE.Mesh(new THREE.SphereGeometry(0.045,8,8), skinMat);
+    jawSide.position.set(0.062*sign,-0.06,frontZ*0.62);
+    jawSide.scale.set(0.85,0.62,0.9);
+    headMesh.add(jawSide);
+  });
+
+  // ETAPA VISUAL: barba por fazer (stubble) - casca fina e transparente por
+  // cima do queixo e da mandíbula (mesmas posições/escalas, levemente maior
+  // pra não brigar com o z-fighting), dá aquele visual "acabou de treinar"
+  // que faltava num rosto liso demais.
+  const stubbleMat = new THREE.MeshBasicMaterial({map:createStubbleTexture(), transparent:true, depthWrite:false});
+  const chinStubble = new THREE.Mesh(new THREE.SphereGeometry(0.0432,10,8), stubbleMat);
+  chinStubble.position.copy(chin.position);
+  chinStubble.scale.set(0.95,0.62,1.0);
+  headMesh.add(chinStubble);
+  [-1,1].forEach(sign=>{
+    const jawStubble = new THREE.Mesh(new THREE.SphereGeometry(0.0462,8,8), stubbleMat);
+    jawStubble.position.set(0.062*sign,-0.06,frontZ*0.62);
+    jawStubble.scale.set(0.85,0.62,0.9);
+    headMesh.add(jawStubble);
+  });
+
+  // ETAPA VISUAL: cicatriz na sobrancelha - marca clássica de lutador,
+  // adiciona individualidade/realismo (tecido de cicatriz, mais claro e
+  // levemente rosado que a pele ao redor).
+  const scarMat = new THREE.MeshStandardMaterial({color:0xd9a89e, roughness:0.5});
+  const browScar = new THREE.Mesh(new THREE.BoxGeometry(0.032,0.005,0.006), scarMat);
+  browScar.position.set(0.05, 0.036, frontZ*0.97);
+  browScar.rotation.z = -0.35;
+  headMesh.add(browScar);
+
+  // ETAPA VISUAL: orelhas - faltavam completamente (cabeça lisa nas
+  // laterais). Duas orelhas simples nas laterais da cabeça, mesmo material
+  // de pele texturizado do resto do corpo. A da direita (sign=1) é "orelha
+  // de couve-flor" - cartilagem inchada/deformada, marca clássica de quem
+  // já apanhou/lutou muito, com bolhas extras por cima da orelha base.
+  [-1,1].forEach(sign=>{
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.026,10,8), skinMat);
+    ear.position.set(R*0.94*sign, -0.005, frontZ*0.12);
+    ear.scale.set(sign===1?0.75:0.55, sign===1?1.15:1.05, sign===1?0.55:0.35);
+    ear.castShadow = true; ear.receiveShadow = true;
+    headMesh.add(ear);
+    if(sign===1){
+      const bumpGeo = new THREE.SphereGeometry(0.009,6,6);
+      [[0.006,0.012,0.006],[-0.004,-0.008,0.008],[0.008,-0.004,-0.004]].forEach(off=>{
+        const bump = new THREE.Mesh(bumpGeo, skinMat);
+        bump.position.set(ear.position.x+off[0], ear.position.y+off[1], ear.position.z+off[2]);
+        headMesh.add(bump);
+      });
+    }
+  });
+
+  // ETAPA VISUAL (corado, pedido do usuário): blush sutil e translúcido na
+  // maçã do rosto - reforça o "corado" de um jeito realista (rubor real
+  // concentrado na bochecha), além do tom de pele já mais quente como um
+  // todo (ver createSkinTexture com flush=true).
+  const blushMat = new THREE.MeshBasicMaterial({color:0xc8584a, transparent:true, opacity:0.22, depthWrite:false});
+  [-1,1].forEach(sign=>{
+    const blush = new THREE.Mesh(new THREE.SphereGeometry(0.028,10,8), blushMat);
+    blush.position.set(0.058*sign, -0.018, frontZ*0.93);
+    blush.scale.set(1.1,0.75,0.4);
+    headMesh.add(blush);
+  });
+
+  // ETAPA VISUAL: olheiras sutis - sombra leve embaixo dos olhos, dá aquele
+  // olhar mais cansado/rústico de lutador (antes o rosto ficava "descansado
+  // demais" ao redor dos olhos).
+  const eyeBagMat = new THREE.MeshBasicMaterial({color:0x3a2a24, transparent:true, opacity:0.14, depthWrite:false});
+  [-1,1].forEach(sign=>{
+    const bag = new THREE.Mesh(new THREE.SphereGeometry(0.02,8,6), eyeBagMat);
+    bag.position.set(0.045*sign, -0.006, frontZ*0.96);
+    bag.scale.set(1.3,0.55,0.4);
+    headMesh.add(bag);
+  });
+
+  buildHair(headMesh, R, frontZ);
+}
+
+// ETAPA VISUAL (cabelo): antes o inimigo não tinha cabelo nenhum (careca lisa
+// direto na esfera da cabeça). Agora tem um "capacete" curto de cabelo
+// (couro cabeludo + tufos curtos) preso num grupo próprio (`opp.hairGroup`)
+// que balança sozinho quando a cabeça leva um soco - ver o uso de
+// `hairSwayX/hairSwayZ` no loop principal, alimentado pelas mesmas
+// velocidades angulares (pitch/yaw/roll) que já chacoalham a cabeça.
+function buildHair(headMesh, R, frontZ){
+  const hairMat = new THREE.MeshStandardMaterial({color:0x1b120c, roughness:0.55});
+  opp.hairGroup = new THREE.Group();
+  opp.hairGroup.position.set(0, R*0.25, -R*0.05);
+  headMesh.add(opp.hairGroup);
+
+  // couro cabeludo - metade de cima da cabeça, um pouco maior que o crânio
+  // pra "vestir" por cima sem dar z-fighting com a pele.
+  const cap = new THREE.Mesh(
+    new THREE.SphereGeometry(R*1.035, 20, 12, 0, Math.PI*2, 0, Math.PI*0.56),
+    hairMat
+  );
+  cap.position.set(0,-R*0.22,0);
+  opp.hairGroup.add(cap);
+
+  // tufos curtos espalhados por cima (corte curto/militar) - pequenos cones
+  // apontando um pouco pra fora do couro cabeludo, cada um com leve
+  // variação de ângulo pra não ficar todo alinhado (textura "despenteada").
+  const tuftGeo = new THREE.ConeGeometry(0.009, 0.032, 5);
+  const rings = [
+    {polar:0.05, count:1},
+    {polar:0.20, count:8},
+    {polar:0.38, count:12},
+    {polar:0.52, count:14},
+  ];
+  rings.forEach(ring=>{
+    for(let i=0;i<ring.count;i++){
+      const phi = (i/ring.count)*Math.PI*2 + Math.random()*0.3;
+      const theta = ring.polar*Math.PI*0.62;
+      const dir = new THREE.Vector3(
+        Math.sin(theta)*Math.cos(phi),
+        Math.cos(theta),
+        Math.sin(theta)*Math.sin(phi)*0.9 - 0.05
+      ).normalize();
+      const tuft = new THREE.Mesh(tuftGeo, hairMat);
+      tuft.position.copy(dir.clone().multiplyScalar(R*1.0)).add(new THREE.Vector3(0,-R*0.22,0));
+      tuft.lookAt(tuft.position.clone().add(dir));
+      tuft.rotation.x += Math.PI/2 + (Math.random()-0.5)*0.4;
+      tuft.scale.setScalar(0.8+Math.random()*0.5);
+      opp.hairGroup.add(tuft);
+    }
+  });
 }
 
 buildOpponent();
@@ -2468,6 +3382,12 @@ let torsoTwist = 0, torsoTwistVel = 0; // ETAPA VISUAL: tronco também torce de 
 // continua sendo a mesma de sempre), só faz a mão recuar um pouco e voltar.
 let blockRecoilL = 0, blockRecoilLVel = 0;
 let blockRecoilR = 0, blockRecoilRVel = 0;
+// ETAPA VISUAL: cabelo balançando - mola com atraso (mais solta e mais lenta
+// que a mola da cabeça) alimentada pelas MESMAS velocidades angulares do
+// soco (yaw/roll/pitch) - assim o cabelo "chicoteia" um pouco depois da
+// cabeça já ter virado, em vez de ficar grudado rígido nela.
+let hairSwayX = 0, hairSwayXVel = 0; // giro lateral do cabelo (soco de lado/gancho)
+let hairSwayZ = 0, hairSwayZVel = 0; // giro pra frente/trás do cabelo (soco de baixo/cima)
 
 function neckWorldPos(){ return opp.neck.getWorldPosition(new THREE.Vector3()); }
 function headWorldPos(){ return opp.head.getWorldPosition(new THREE.Vector3()); }
@@ -2681,9 +3601,17 @@ function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
   // cabeça já vira tanto que o piscar é só um detalhe a mais.
   eyeSquintVel += THREE.MathUtils.lerp(1.6, 0.35, t) * (mit.blocked ? 0.5 : 1);
   torsoLeanVel += mit.blocked ? 0.15 : THREE.MathUtils.lerp(0.08, 0.5, t);
-  spawnBloodDecal(opp.head, local, (0.05+Math.random()*0.05) * (1+dmgRatio*0.6));
+  // ETAPA 10: só sai líquido (saliva -> sangue) em soco EFETIVO de verdade -
+  // bloqueado ou fraco demais (t baixo) não produz nada, nem saliva.
+  // `bloodRatio` decide a substância: pouco dano acumulado nessa região = só
+  // saliva/suor; conforme a região já apanhou mais, o líquido vira sangue de
+  // vez (um soco muito forte também já puxa um pouco de sangue de cara).
+  if(!mit.blocked && t >= EFFECTIVE_HIT_T_MIN){
+    const bloodRatio = THREE.MathUtils.clamp(dmgRatio/0.3 + t*t*0.25, 0, 1);
+    spawnBloodDecal(opp.head, local, (0.05+Math.random()*0.05) * (1+dmgRatio*0.6), bloodRatio);
+    spawnBloodBurst(hitPoint, controllerVel.clone().normalize(), bloodRatio);
+  }
   const dir = controllerVel.clone().normalize();
-  spawnBloodBurst(hitPoint, dir);
   // impulso real no corpo físico da cabeça do ragdoll (sem efeito visual ainda -
   // corpo cinemático; ver comentário em `applyRagdollImpulse`). Valor provisório,
   // ajustar depois que o ragdoll estiver solto de verdade e dermos pra testar.
@@ -2726,9 +3654,14 @@ function registerBodyHit(speed, controllerVel, hitPoint, powerMult){
   torsoLeanVel += mit.blocked ? 0.12 : THREE.MathUtils.lerp(0.05, isBelly ? (isSolarPlexus ? 2.3 : 1.7) : 0.4, Math.pow(t,1.3));
   const localDirBody = worldDirToLocal(opp.torsoPivot, controllerVel.clone().normalize());
   torsoTwistVel += -localDirBody.x * (mit.blocked ? 0.15 : THREE.MathUtils.lerp(0.04, 0.65, t));
-  spawnBloodDecal(opp.torsoMesh, localHit, (0.05+Math.random()*0.06) * (1+dmgRatio*0.6));
+  // ETAPA 10: mesma regra do soco na cabeça - só sai algo em soco efetivo,
+  // e começa como suor/saliva antes de virar sangue de verdade.
+  if(!mit.blocked && t >= EFFECTIVE_HIT_T_MIN){
+    const bloodRatio = THREE.MathUtils.clamp(dmgRatio/0.3 + t*t*0.25, 0, 1);
+    spawnBloodDecal(opp.torsoMesh, localHit, (0.05+Math.random()*0.06) * (1+dmgRatio*0.6), bloodRatio);
+    spawnBloodBurst(hitPoint, controllerVel.clone().normalize(), bloodRatio);
+  }
   const dir = controllerVel.clone().normalize();
-  spawnBloodBurst(hitPoint, dir);
   // impulso real no corpo físico do tronco do ragdoll - mesma ressalva do soco na cabeça.
   applyRagdollImpulse('torso', dir, THREE.MathUtils.clamp(speed*0.6, 0.4, 5), hitPoint);
   pulseHaptics();
@@ -2740,8 +3673,12 @@ function registerGroundPound(speed, controllerVel, hitPoint){
   const force = computePunchForce(speed, 8, 38);
   applyDamage(force.power, true);
   const local = opp.head.worldToLocal(hitPoint.clone());
-  spawnBloodDecal(opp.head, local, 0.06+Math.random()*0.07);
-  spawnBloodBurst(hitPoint, controllerVel.clone().normalize());
+  // ETAPA 10: soco no chão sempre acerta em cheio (sem guarda), mas ainda
+  // segue a mesma progressão saliva -> sangue conforme a cabeça já apanhou.
+  const dmgRatio = 1 - (opp.headHealth/opp.headMaxHealth);
+  const bloodRatio = THREE.MathUtils.clamp(dmgRatio/0.3 + force.t*force.t*0.25, 0, 1);
+  spawnBloodDecal(opp.head, local, 0.06+Math.random()*0.07, bloodRatio);
+  spawnBloodBurst(hitPoint, controllerVel.clone().normalize(), bloodRatio);
   if(opp.bloodPool) opp.bloodPool.userData.growTo += 0.03;
   opp.getUpTimer = Math.max(opp.getUpTimer, 3.0); // atordoa mais tempo no chão
   pulseHaptics();
@@ -2749,31 +3686,16 @@ function registerGroundPound(speed, controllerVel, hitPoint){
 }
 
 /* ------------------------------ Queda física real (sem animação fixa) ------------------------------ */
-// A queda é um pequeno integrador de física: velocidade + rotação em torno de um eixo
-// horizontal, calculados a partir da velocidade REAL da sua mão no momento em que ele
-// perde o equilíbrio. Isso substitui qualquer animação "pronta" de 0 a 100.
+// PASSO 4: a queda é 100% física - sem nenhum integrador manual por cima.
+// Isso só existe pra jogar o impulso real (baseado na velocidade da sua mão
+// no momento em que ele perde o equilíbrio) no ragdoll; a partir daí, onde
+// ele parar é onde a física deixar, sem "animação" nenhuma resolvendo.
 function startPhysicsFall(impulseVel, endState){
   opp.state = 'falling_physics';
   opp.fallEndState = endState; // 'down' (derrubado) ou 'ko' (nocauteado)
-  opp.fallBaseQuat.copy(opp.root.quaternion);
-  opp.fallAngle = 0;
 
-  const dir = new THREE.Vector3(impulseVel.x, 0, impulseVel.z);
-  if(dir.lengthSq() < 0.0001) dir.set(0,0,1);
-  dir.normalize();
-
-  // eixo horizontal perpendicular à direção do puxão/impulso: ele tomba "para trás"
-  // na direção oposta/lateral de onde foi puxado, como um corpo real perderia o pé
-  opp.fallAxis.set(dir.z, 0, -dir.x).normalize();
-  opp.fallAngularSpeed = THREE.MathUtils.clamp(impulseVel.length()*2.2, 2.0, 7.0);
-
-  opp.fallVel.copy(dir).multiplyScalar(THREE.MathUtils.clamp(impulseVel.length()*0.5, 0.3, 2.2));
-  opp.fallVel.y = Math.max(0.15, impulseVel.y*0.5);
-
-  // tenta soltar o ragdoll físico de verdade; se não der (Ammo não carregou,
-  // CDN fora do ar, etc.), `opp.ragdollActive` fica false e o integrador
-  // manual de sempre (logo abaixo, em updateOpponentAI) continua cuidando
-  // da queda exatamente como antes - ninguém percebe a diferença nesse caso.
+  // joga o impulso real no ragdoll (o quadril e o tronco sentem primeiro,
+  // o resto segue pelas juntas) - ver `releaseOpponentRagdoll`.
   releaseOpponentRagdoll(impulseVel);
 
   // ele caiu: solta qualquer agarre (a mão perde o ponto quando ele desaba)
@@ -2830,23 +3752,87 @@ function tryGrab(ci){
   });
   if(best){
     grabState[ci] = {active:true, id:best.id, part:best.part, obj:best.obj};
+
+    // PASSO 3: guarda o ponto exato do agarrão em coordenadas LOCAIS do
+    // corpo físico correspondente (não o centro dele) - assim, conforme o
+    // corpo gira, a gente sabe recalcular onde aquele mesmo ponto material
+    // está no mundo e perseguir ele com a mão. É isso que faz a perna
+    // "virar" de verdade (não só transladar) quando você levanta a ponta
+    // que está segurando.
+    const ragdollKey = GRAB_ID_TO_RAGDOLL_KEY[best.id];
+    const part = ragdollKey && opp.ragdoll && opp.ragdoll[ragdollKey];
+    if(part && part.body){
+      part.body.getMotionState().getWorldTransform(tmpTrans);
+      const o = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
+      const bodyPos = new THREE.Vector3(o.x(), o.y(), o.z());
+      const invBodyQuat = new THREE.Quaternion(-q.x(), -q.y(), -q.z(), q.w()); // conjugado = inverso (quat unitário)
+      const grabPoint = best.obj.getWorldPosition(new THREE.Vector3());
+      grabState[ci].ragdollKey = ragdollKey;
+      grabState[ci].localOffset = grabPoint.sub(bodyPos).applyQuaternion(invBodyQuat);
+    }
+
     if(gloveMats[ci]) gloveMats[ci].color.setHex(0x2a8f3a); // verde = agarrado
     pulseHaptics();
   }
 }
 function releaseGrab(ci){
   grabState[ci] = {active:false, id:null, part:null, obj:null};
-  if(gloveMats[ci]) gloveMats[ci].color.setHex(0xc9906a); // AJUSTE: volta pro tom de pele (antes era o vermelho da luva)
+  if(gloveMats[ci]) gloveMats[ci].color.setHex(0xb87a5c); // AJUSTE: volta pro tom de pele (antes era o vermelho da luva)
 }
 
-// Processa os agarrões ativos todo frame: em pé, puxar a perna/tronco/braço
-// desgasta o equilíbrio real dele; no chão, você arrasta o corpo físico dele
-// de verdade via força real no Ammo (perna, tronco ou braço).
+// PASSO 3: puxão físico real. Enquanto segura qualquer parte - em pé, caído,
+// tentando levantar, tanto faz - aplica uma força tipo mola-amortecedor
+// DIRETO NO PONTO onde a mão pegou (não no centro do corpo), perseguindo a
+// posição atual da mão de verdade. Isso faz a parte "virar"/seguir a mão
+// (não só transladar), e como a MESMA força vale pra todo mundo, uma parte
+// mais pesada (`RAGDOLL_MASS_BY_PART`) precisa de mais força/puxão real da
+// sua mão pra se mover na mesma velocidade que uma mais leve - é F=ma de
+// verdade, não um fator manual por parte.
+const GRAB_KP = 950, GRAB_KD = 55, GRAB_MAX_FORCE = 2200;
+function applyGrabPointPull(ci){
+  const g = grabState[ci];
+  const part = g.ragdollKey && opp.ragdoll && opp.ragdoll[g.ragdollKey];
+  if(!part || !part.body || !g.localOffset) return;
+  const ctrl = ci===0 ? controller0 : controller1;
+  if(!ctrl) return;
+
+  const body = part.body;
+  body.getMotionState().getWorldTransform(tmpTrans);
+  const o = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
+  const bodyPos = new THREE.Vector3(o.x(), o.y(), o.z());
+  const bodyQuat = new THREE.Quaternion(q.x(), q.y(), q.z(), q.w());
+
+  // ponto material atual (o mesmo que foi agarrado, já rotacionado com o corpo)
+  const rotatedOffset = g.localOffset.clone().applyQuaternion(bodyQuat);
+  const worldPoint = bodyPos.clone().add(rotatedOffset);
+
+  const lv = body.getLinearVelocity(), av = body.getAngularVelocity();
+  const linVel = new THREE.Vector3(lv.x(), lv.y(), lv.z());
+  const angVel = new THREE.Vector3(av.x(), av.y(), av.z());
+  const pointVel = linVel.add(angVel.clone().cross(rotatedOffset)); // v do ponto = v do centro + ω×r
+
+  const handPos = ctrl.getWorldPosition(new THREE.Vector3());
+  const force = handPos.sub(worldPoint).multiplyScalar(GRAB_KP).sub(pointVel.multiplyScalar(GRAB_KD));
+  force.clampLength(0, GRAB_MAX_FORCE);
+
+  body.activate(true);
+  body.applyForce(new Ammo.btVector3(force.x, force.y, force.z), new Ammo.btVector3(rotatedOffset.x, rotatedOffset.y, rotatedOffset.z));
+}
+
+// Processa os agarrões ativos todo frame. A força física real (puxão no
+// ponto) já resolve sozinha "a parte segue a mão, pesando o que deve pesar"
+// pra qualquer estado - o que muda por estado é só o EFEITO colateral: em
+// pé/atordoado, ainda desgasta `opp.stability` (decide quando ele oficialmente
+// cai - isso vira física de verdade no passo 6) e arrasta o alvo de
+// equilíbrio (`opp.root`, sentido pelo passo 2); caído/tentando levantar,
+// segurar ele durante o "levantar" derruba ele de volta.
 function handleGrabs(dt){
   for(let ci=0; ci<2; ci++){
     const g = grabState[ci];
     if(!g.active) continue;
     if(opp.state==='ko' || opp.state==='finished'){ releaseGrab(ci); continue; }
+
+    applyGrabPointPull(ci);
 
     const vel = ctrlVel[ci];
     const horiz = new THREE.Vector3(vel.x, 0, vel.z);
@@ -2857,7 +3843,7 @@ function handleGrabs(dt){
       const factor = g.part==='leg' ? LEG_PULL_FACTOR : (g.part==='torso' ? TORSO_PULL_FACTOR : (g.part==='head' ? HEAD_PULL_FACTOR : (g.part==='hip' ? HIP_PULL_FACTOR : ARM_PULL_FACTOR)));
       opp.stability -= horiz.length()*factor*dt*0.6/groundDom;
 
-      // puxão real também desloca o corpo dele (clinch), dá sensação de peso
+      // puxão real também desloca o alvo de equilíbrio (clinch), dá sensação de peso
       opp.root.position.addScaledVector(horiz, dt*CLINCH_DRAG_FACTOR);
       clampToBoundary(opp.root.position, 0.35);
 
@@ -2867,33 +3853,11 @@ function handleGrabs(dt){
         setStatus('Ele perdeu o equilíbrio e caiu!');
       }
     } else if(opp.state==='down' || opp.state==='gettingUp'){
-      // PASSO 4: se o ragdoll já está solto de verdade (corpo dinâmico), o
-      // arraste agora empurra o corpo físico agarrado (perna ou tronco) -
-      // o resto do boneco segue por causa das juntas (cintura/quadril), então
-      // o "peso" que você sente é física real, não um fator manual copiando
-      // a posição da mão. `opp.root` não tem mais efeito visual aqui: os
-      // meshes já saíram da hierarquia dele quando o ragdoll foi solto
-      // (ver `scene.attach` em `releaseOpponentRagdoll`).
-      const ragdollKey = GRAB_ID_TO_RAGDOLL_KEY[g.id];
-      const part = ragdollKey && opp.ragdoll && opp.ragdoll[ragdollKey];
-
-      if(opp.ragdollActive && part && part.dynamic && part.body){
-        part.body.activate(true);
-        tmpImpulseVec.setValue(horiz.x*GROUND_DRAG_FORCE*dt, 0, horiz.z*GROUND_DRAG_FORCE*dt);
-        part.body.applyCentralImpulse(tmpImpulseVec);
-      } else {
-        // fallback: ragdoll não solto de verdade por algum motivo (Ammo
-        // falhou, corpo ainda não existe etc.) - mantém o comportamento
-        // manual de sempre pra não travar a jogabilidade.
-        opp.root.position.addScaledVector(horiz, dt*GROUND_DRAG_FACTOR);
-        clampToBoundary(opp.root.position, 0.3);
-      }
-
       if(opp.state==='gettingUp'){
-        // NOVO: segurar ele enquanto tenta levantar tira o equilíbrio dele
-        // de vez - derruba fisicamente de volta (ragdoll de verdade), na
-        // direção real do seu puxão (ver interruptGetUp).
-        interruptGetUp(new THREE.Vector3(horiz.x, 0.25, horiz.z), 'Você o derrubou de volta!');
+        // segurar ele enquanto tenta levantar o derruba de volta
+        opp.state = 'down';
+        opp.getUpProgress = Math.max(0, opp.getUpProgress - 0.35);
+        setStatus('Você o derrubou de volta!');
       }
     }
   }
@@ -2905,64 +3869,27 @@ function handleGrabs(dt){
 function startGettingUp(){
   opp.state = 'gettingUp';
   opp.getUpElapsed = 0;
+  opp.getUpHoldTimer = 0;
 
-  // CORREÇÃO: se o ragdoll ainda está solto de verdade (dinâmico - foi
-  // por isso que dava pra arrastar ele com força real no passo 4), devolve
-  // tudo pro modo cinemático/hierarquia animada AGORA, antes de tocar a
-  // animação de "levantar" - senão `opp.root` fica sem efeito visual
-  // nenhum (os meshes já saíram da hierarquia dele em
-  // `releaseOpponentRagdoll`, via `scene.attach`) e o adversário nunca
-  // levanta na tela, só fica largado onde a física deixou.
-  if(opp.ragdollActive){
-    const hipMesh = opp.ragdoll.hip.mesh;
-    hipMesh.getWorldPosition(tmpVec3);
-    hipMesh.getWorldQuaternion(tmpQuat);
-    resetOpponentRagdollToKinematic(); // reencaixa hip/tronco/cabeça/pernas e volta pra kinematic
-
-    // reconstrói `opp.root` a partir da pose real onde o quadril físico
-    // parou, pra não dar um "pulo" visual bem na hora que a hierarquia
-    // volta a mandar (o quadril é filho de `opp.root` num offset local
-    // fixo de (0, 0.92, 0) - ver `reattachRagdollMesh`).
-    opp.root.quaternion.copy(tmpQuat);
-    tmpVec3B.set(0, 0.92, 0).applyQuaternion(opp.root.quaternion);
-    opp.root.position.copy(tmpVec3).sub(tmpVec3B);
+  // PASSO 6: o ragdoll já é dinâmico o tempo todo desde o passo 1 - não tem
+  // mais "reencaixar na hierarquia animada" nenhum aqui, e nenhuma animação
+  // de levantar é tocada. Só realinha o ALVO (`opp.root`) com a posição
+  // horizontal de onde o quadril físico está DE VERDADE agora (ele pode ter
+  // rolado/sido arrastado enquanto caído), pra mola de equilíbrio de
+  // `updateOpponentBalance` (que passa a agir bem mais FORTE neste estado -
+  // ver BALANCE_*_GETUP) puxar ele pra ficar de pé no lugar onde ele está,
+  // e não arrastar pra um alvo antigo/distante deixado pela IA antes da
+  // queda. A orientação-alvo é sempre `opp.facingBase` (a mesma referência
+  // "de pé, olhando pra frente" usada desde sempre).
+  const hip = opp.ragdoll && opp.ragdoll.hip;
+  if(hip && hip.mesh){
+    hip.mesh.getWorldPosition(tmpVec3);
+    opp.root.position.x = tmpVec3.x;
+    opp.root.position.z = tmpVec3.z;
     clampToBoundary(opp.root.position, 0.3);
   }
-
-  opp.getUpFrom.copy(opp.root.quaternion);
-
-  // NOVO: sorteia qual braço planta no chão nessa tentativa e limpa
-  // qualquer resquício de pose de uma tentativa anterior interrompida
-  // (senão ele podia "herdar" uma inclinação de tronco ou cambaleio do
-  // levantar que apanhou antes).
-  opp.handPlantSign = Math.random()<0.5 ? 1 : -1;
-  opp.torsoPivot.rotation.x = 0;
-  opp.root.rotation.z = 0;
-}
-
-// NOVO: quebra a tentativa de levantar no meio - chamado quando o jogador
-// tira o equilíbrio dele de novo (agarrão, um golpe bem colocado durante a
-// subida) ou deita peso em cima. Em vez de só "teleportar" de volta pro
-// estado 'down', reativa o ragdoll físico DE VERDADE a partir da pose exata
-// em que ele estava tentando levantar - ele tomba fisicamente, com a força e
-// direção do impulso recebido, igual a queda original. `getUpProgress`
-// também recua, então ele precisa reconquistar o direito de tentar de novo.
-function interruptGetUp(impulseVel, msg){
-  if(opp.state!=='gettingUp') return;
-  opp.getUpProgress = Math.max(0, opp.getUpProgress - GETUP_INTERRUPT_PENALTY);
-  const vel = impulseVel || new THREE.Vector3(0, 0.3, 0);
-  releaseOpponentRagdoll(vel); // se o Ammo não deixar (raro), ele fica na pose atual mesmo - fallback seguro
-  // CORREÇÃO: se essa tentativa de levantar veio de um nocaute (koTimer já
-  // tinha zerado), volta como uma queda normal - senão o ramo 'down' via
-  // downCause==='knockout' checaria koTimer<=0 de novo no PRÓXIMO frame e ele
-  // tentaria levantar instantaneamente nas mesmas condições, ignorando a
-  // interrupção que você acabou de causar.
-  opp.downCause = 'throw';
-  opp.state = 'down';
-  // acabou de apanhar tentando levantar - tenta rolar pra longe de novo logo,
-  // em vez de esperar o cooldown inteiro parado no lugar
-  opp.rollAwayCooldown = ROLL_AWAY_COOLDOWN_MIN*0.5;
-  if(msg) setStatus(msg);
+  opp.root.position.y = 0;
+  opp.root.quaternion.copy(opp.facingBase);
 }
 
 /* ------------------------------ IA / animação idle ------------------------------ */
@@ -3015,7 +3942,73 @@ function updateHeadDodge(dt){
   opp.torsoPivot.rotation.z = THREE.MathUtils.lerp(opp.torsoPivot.rotation.z, -opp.headDodgeOffset.x*1.4, dt*10);
 }
 
+// PASSO 5: separada da DECISÃO de começar um soco (que continua exigindo
+// estar em pé, avaliando distância etc. - ver ramo 'standing' mais abaixo),
+// porque a EXECUÇÃO do soco, uma vez começada, agora tem que continuar
+// acontecendo em cima do ragdoll físico não importa o que aconteça com o
+// resto do corpo no meio do caminho (atordoado, caiu, foi segurado) - por
+// isso é chamada incondicionalmente, uma vez por frame, pra QUALQUER
+// `opp.state`. Antes esse código só rodava dentro do `if(opp.state===
+// 'standing')`, então um soco no meio do caminho travava (attackT
+// congelado) assim que o estado mudava. Só ESCREVE o alvo do braço
+// (`opp.armTargetLocal`) - quem aplica o torque de verdade é
+// `updateArmMuscles`, lá no passo físico (`stepPhysics`).
+function updateOpponentPunchSwing(dt){
+  if(!opp.attacking) return;
+  const def = PUNCH_DEFS[opp.attackType];
+  const style = opp.style || ENEMY_STYLES.balanced;
+  opp.attackT += (dt/def.duration) * style.speedMult; // 0..1 normalizado, independente da duração de cada padrão
+  const t2 = Math.min(opp.attackT, 1);
+  const s = Math.sin(t2*Math.PI); // sobe e desce (0 -> 1 -> 0)
+  const side = (opp.attackSwing===opp.lArmPivot) ? 1 : -1;
+  const armSide = (opp.attackSwing===opp.lArmPivot) ? 'L' : 'R';
+  const otherSide = armSide==='L' ? 'R' : 'L';
+
+  const bellyLean = THREE.MathUtils.clamp(opp.guard.belly/GUARD_MAX, 0, 1);
+  const shoulderBase = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, GUARD_SHOULDER_LOW, bellyLean);
+  const elbowBase = THREE.MathUtils.lerp(GUARD_ELBOW_HIGH, GUARD_ELBOW_LOW, bellyLean);
+
+  // NOVO: os 3 golpes têm biomecânica bem diferente entre si - cada um mexe
+  // o cotovelo (cosmético, filho do braço - não é físico) e o alvo do ombro
+  // (`armTargetLocal`, perseguido de verdade pelo músculo) do jeito que
+  // aquele soco funciona. AJUSTE (passo 5): o giro extra de tronco/quadril
+  // que o cruzado/gancho tinham antes foi removido daqui - `opp.hip` e
+  // `opp.torsoPivot` já são corpo físico/hierarquia órfã do ragdoll (ver
+  // buildOpponentRagdoll), girar eles direto não tinha efeito visual
+  // nenhum desde o passo 1, igual acontecia com o braço.
+  if(opp.attackType==='jab'){
+    // JAB: o mais simples e rápido - só o braço da frente dispara reto e
+    // volta, cotovelo estica quase 100%.
+    opp.attackSwing.userData.elbow.rotation.x = THREE.MathUtils.lerp(elbowBase, 0.05, s);
+    opp.armTargetLocal[armSide].x = shoulderBase - s*1.4;
+    opp.armTargetLocal[armSide].z = 0;
+  } else if(opp.attackType==='cross'){
+    // CRUZADO: o braço de trás estica reto cruzando a frente do corpo.
+    opp.attackSwing.userData.elbow.rotation.x = THREE.MathUtils.lerp(elbowBase, 0.0, s);
+    opp.armTargetLocal[armSide].x = shoulderBase - s*1.15;
+    opp.armTargetLocal[armSide].z = -side*s*0.3;
+    // o braço de apoio (o que NÃO está socando) recua perto do rosto -
+    // ele segura a guarda enquanto o outro lado gira pra frente
+    opp.armTargetLocal[otherSide].x = GUARD_SHOULDER_HIGH;
+  } else { // hook (gancho)
+    // GANCHO: o cotovelo NÃO estica, fica dobrado em ~90° o tempo todo - é
+    // o braço inteiro que faz um arco horizontal (soco "de lado").
+    opp.attackSwing.userData.elbow.rotation.x = THREE.MathUtils.lerp(elbowBase, 1.15, Math.min(1,s*1.6));
+    opp.armTargetLocal[armSide].x = shoulderBase - s*0.2;
+    opp.armTargetLocal[armSide].z = side*s*1.3;
+  }
+
+  // momento do impacto: perto do pico do movimento (metade do swing)
+  if(!opp.attackHitDone && t2>=0.48){
+    opp.attackHitDone = true;
+    resolveEnemyPunch(def);
+  }
+  if(t2>=1){ opp.attacking=false; }
+}
+
 function updateOpponentAI(dt, camXZ){
+  updateOpponentPunchSwing(dt); // PASSO 5: roda em QUALQUER estado, não só 'standing'
+
   // ETAPA 5: estilo escolhido no menu - lido por vários estados (não só 'standing')
   const style = opp.style || ENEMY_STYLES.balanced;
   // ETAPA 7: dificuldade escala a agressividade do estilo e a velocidade com
@@ -3110,6 +4103,18 @@ function updateOpponentAI(dt, camXZ){
 
     const t = performance.now()*0.002;
     opp.torsoPivot.position.y = 0.1 + Math.sin(t)*0.01;
+
+    // NOVO: "base" de verdade nas pernas - em vez de ficar parado feito
+    // estátua, o inimigo fica na ponta dos pés balançando/pisando no lugar
+    // como um boxeador de verdade esperando a abertura (footwork de base:
+    // pequeno bounce vertical no quadril + as duas pernas alternando uma
+    // leve flexão pra frente, fora de fase uma da outra).
+    const bounceT = performance.now()*0.0045;
+    const legBounce = Math.abs(Math.sin(bounceT)) * 0.02; // nunca fica "grudado" no chão
+    opp.hip.position.y = 0.92 + legBounce;
+    if(opp.legMeshes.L) opp.legMeshes.L.rotation.x = Math.sin(bounceT*2) * 0.07;
+    if(opp.legMeshes.R) opp.legMeshes.R.rotation.x = Math.sin(bounceT*2 + Math.PI) * 0.07;
+
     // ETAPA 6: postura de guarda real - mãos na frente do rosto por padrão,
     // só abrindo quando ele ataca (ver `opp.attackSwing` abaixo, que
     // sobrescreve a rotação SÓ do braço que está socando). `opp.guard.belly`
@@ -3124,16 +4129,21 @@ function updateOpponentAI(dt, camXZ){
     const reinforceL = THREE.MathUtils.clamp((opp.guard.headL-GUARD_HEAD_BASE)/GUARD_REACT_STEP, 0, 1.5);
     const reinforceR = THREE.MathUtils.clamp((opp.guard.headR-GUARD_HEAD_BASE)/GUARD_REACT_STEP, 0, 1.5);
     const swayL = Math.sin(t*1.3)*0.03, swayR = Math.sin(t*1.3+Math.PI)*0.03;
+    // PASSO 5: escreve só o ALVO (`opp.armTargetLocal`) - quem persegue ele
+    // de verdade com torque físico é `updateArmMuscles`. O próprio alvo já
+    // muda suavemente frame a frame (bellyLean/sway/reinforce já vêm de
+    // valores que decaem devagar), então não precisa mais de um lerp aqui
+    // em cima - a mola faz o amortecimento de verdade, com peso real.
     if(!opp.attacking || opp.attackSwing!==opp.lArmPivot){
-      opp.lArmPivot.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.rotation.x, shoulderBase+swayL, dt*guardLerp);
-      opp.lArmPivot.rotation.z = THREE.MathUtils.lerp(opp.lArmPivot.rotation.z, 0, dt*guardLerp) + blockRecoilL*0.5;
+      opp.armTargetLocal.L.x = shoulderBase+swayL;
+      opp.armTargetLocal.L.z = blockRecoilL*0.5;
       // ETAPA VISUAL: bloqueou o soco -> o cotovelo/luva recua um pouco (some
       // essa flexão extra em cima da pose de guarda normal) e volta sozinho
       opp.lArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.userData.elbow.rotation.x, elbowBase+reinforceL*0.15, dt*guardLerp) + blockRecoilL;
     }
     if(!opp.attacking || opp.attackSwing!==opp.rArmPivot){
-      opp.rArmPivot.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.rotation.x, shoulderBase+swayR, dt*guardLerp);
-      opp.rArmPivot.rotation.z = THREE.MathUtils.lerp(opp.rArmPivot.rotation.z, 0, dt*guardLerp) - blockRecoilR*0.5;
+      opp.armTargetLocal.R.x = shoulderBase+swayR;
+      opp.armTargetLocal.R.z = -blockRecoilR*0.5;
       opp.rArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.userData.elbow.rotation.x, elbowBase+reinforceR*0.15, dt*guardLerp) + blockRecoilR;
     }
     // guarda relaxa sozinha de volta pro valor base com o tempo (ver consts GUARD_*)
@@ -3171,45 +4181,10 @@ function updateOpponentAI(dt, camXZ){
       opp.attackTimer = (1.3+Math.random()*1.6) / style.speedMult;
       }
     }
-    if(opp.attacking){
-      const def = PUNCH_DEFS[opp.attackType];
-      // ETAPA 5: speedMult também acelera a própria animação do soco
-      opp.attackT += (dt/def.duration) * style.speedMult; // 0..1 normalizado, independente da duração de cada padrão
-      const t2 = Math.min(opp.attackT, 1);
-      const s = Math.sin(t2*Math.PI); // sobe e desce (0 -> 1 -> 0)
-      const side = (opp.attackSwing===opp.lArmPivot) ? 1 : -1;
-
-      // ETAPA 6: soca "abrindo" a guarda - o cotovelo estica de dobrado
-      // (guarda) pra quase reto (extensão do soco) e volta a dobrar ao fim
-      // do movimento, seguindo o mesmo envelope `s` do resto da animação.
-      opp.attackSwing.userData.elbow.rotation.x = THREE.MathUtils.lerp(elbowBase, 0.15, s);
-
-      if(opp.attackType==='jab'){
-        // reto e simples: braço estica na frente, sem rotação lateral
-        opp.attackSwing.rotation.x = shoulderBase - s*1.35;
-        opp.attackSwing.rotation.z = 0;
-      } else if(opp.attackType==='cross'){
-        // cruzado: arco vindo de lado, cruzando na frente do corpo, com o
-        // tronco girando junto (soco cruzado usa a rotação do corpo todo)
-        opp.attackSwing.rotation.x = shoulderBase - s*1.1;
-        opp.attackSwing.rotation.z = -side*s*0.6;
-        opp.torsoPivot.rotation.y = -side*s*0.28;
-      } else { // hook (gancho): começa baixo e sobe, de lado
-        opp.attackSwing.rotation.x = shoulderBase - s*0.45;
-        opp.attackSwing.rotation.z = side*s*0.95;
-      }
-
-      // momento do impacto: perto do pico do movimento (metade do swing)
-      if(!opp.attackHitDone && t2>=0.48){
-        opp.attackHitDone = true;
-        resolveEnemyPunch(def);
-      }
-      if(t2>=1){ opp.attacking=false; }
-    }
-    // o giro do tronco do cruzado sempre volta suavemente pra 0 (fora do golpe)
-    if(!(opp.attacking && opp.attackType==='cross')){
-      opp.torsoPivot.rotation.y = THREE.MathUtils.lerp(opp.torsoPivot.rotation.y, 0, dt*6);
-    }
+    // PASSO 5: a EXECUÇÃO do soco (attackT avançando, pose do braço, hit no
+    // momento certo) saiu daqui - agora é `updateOpponentPunchSwing`,
+    // chamada incondicionalmente no topo de `updateOpponentAI` pra
+    // continuar rodando em qualquer estado, não só em pé.
   } else if(opp.state==='takedownAttempt'){
     // NOVO: investida de queda telegrafada. Avança se inclinando pra pegar
     // as pernas do jogador; braços esticam pra baixo/frente indo buscar.
@@ -3223,8 +4198,9 @@ function updateOpponentAI(dt, camXZ){
     opp.root.rotation.x = tw*0.4; // mergulha pra frente
     clampToBoundary(opp.root.position, 0.35);
     opp.hip.position.y = THREE.MathUtils.lerp(0.92, 0.68, tw); // agacha buscando as pernas
-    opp.lArmPivot.rotation.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
-    opp.rArmPivot.rotation.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
+    // PASSO 5: idem - alvo, não mais rotação direta (braço é ragdoll dinâmico)
+    opp.armTargetLocal.L.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
+    opp.armTargetLocal.R.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
     if(opp.lArmPivot.userData.elbow) opp.lArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(GUARD_ELBOW_HIGH, 0.15, tw);
     if(opp.rArmPivot.userData.elbow) opp.rArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(GUARD_ELBOW_HIGH, 0.15, tw);
 
@@ -3257,44 +4233,20 @@ function updateOpponentAI(dt, camXZ){
     opp.stateTimer -= dt;
     if(opp.stateTimer<=0) opp.state='standing';
   } else if(opp.state==='falling_physics'){
-    if(opp.ragdollActive){
-      // ragdoll físico de verdade assumiu - Ammo já move hip/torso/cabeça/pernas
-      // sozinho via `rigidBodies` (no stepPhysics). Aqui só decide quando a
-      // queda "assentou" pra trocar de estado (down/ko), igual o sistema
-      // manual fazia com o ângulo.
-      updateRagdollFallSettle(dt);
-    } else {
-    // integrador físico real: velocidade + rotação em torno de um eixo horizontal,
-    // desacelerando por atrito/gravidade - nada de animação com tempo fixo.
-    opp.fallAngle += opp.fallAngularSpeed*dt;
-    const angleClamped = Math.min(opp.fallAngle, Math.PI/2);
-    const q = new THREE.Quaternion().setFromAxisAngle(opp.fallAxis, angleClamped);
-    opp.root.quaternion.copy(q).multiply(opp.fallBaseQuat);
-
-    opp.fallVel.y -= FALL_GRAVITY*dt;
-    opp.root.position.addScaledVector(opp.fallVel, dt);
-    opp.fallVel.multiplyScalar(0.94); // atrito indo pro chão
-    clampToBoundary(opp.root.position, 0.2); // isso é o que faltava: aqui ele escapava do limite
-    if(opp.root.position.y < 0){ opp.root.position.y = 0; opp.fallVel.y = 0; }
-
-    if(angleClamped >= Math.PI/2 - 0.001){
-      opp.root.position.y = 0.02;
-      opp.fallVel.set(0,0,0);
-      if(opp.fallEndState==='ko'){
-        opp.state = 'ko';
-      } else {
-        opp.state = 'down';
-        opp.getUpProgress = 0;
-        // ETAPA 4: mesma lógica do settle via ragdoll acima - queda por
-        // nocaute começa a contagem de 5s em vez do getUpProgress normal.
-        if(opp.downCause==='knockout') opp.koTimer = KNOCKDOWN_TIME;
-        if(!opp.bloodPool) opp.bloodPool = spawnFloorBloodPool(opp.root.position);
-      }
-    }
-    }
+    // PASSO 4: sem fallback manual - o ragdoll é sempre dinâmico desde o
+    // passo 1, então `releaseOpponentRagdoll` sempre consegue aplicar o
+    // impulso de verdade. Ammo já move hip/torso/cabeça/pernas sozinho via
+    // `rigidBodies` (dentro de `stepPhysics`); aqui só decide quando a queda
+    // "assentou" pra trocar de estado (down/ko).
+    updateRagdollFallSettle(dt);
   } else if(opp.state==='down'){
-    const wig = Math.sin(performance.now()*0.01)*0.05;
-    opp.lArmPivot.rotation.z = wig;
+    // PASSO 5: escreve no ALVO do braço (não mais na rotação direto - o
+    // braço é ragdoll dinâmico, `updateArmMuscles` que persegue isso de
+    // verdade). Só mexe se esse braço não estiver no meio de um soco agora
+    // (`updateOpponentPunchSwing` já escreveu o alvo dele nesse caso).
+    if(!(opp.attacking && opp.attackSwing===opp.lArmPivot)){
+      opp.armTargetLocal.L.z = Math.sin(performance.now()*0.01)*0.05;
+    }
 
     if(opp.downCause==='knockout'){
       // ETAPA 4: caiu por nocaute (vida zerada) - fica desacordado "na
@@ -3329,118 +4281,48 @@ function updateOpponentAI(dt, camXZ){
       // inimigo caído. Isso dificulta AINDA MAIS ele levantar, além do
       // agarrão de mão normal (os dois efeitos se somam).
       const lyingOnTop = playerGroundState==='down' && playerBodyWorldPos().distanceTo(torsoTopWorldPos()) < MOUNT_PIN_RADIUS;
-
-      // NOVO: rolar pra longe. As ÚNICAS duas formas de impedir são as que o
-      // jogador pediu - agarrar (beingHeld) ou deitar peso em cima
-      // (lyingOnTop). Sem nenhum dos dois, e enquanto ele ainda não estiver
-      // comprometido de vez com o levantar (getUpProgress baixo), ele usa
-      // impulsos físicos REAIS no ragdoll (não um "teleporte" cosmético) pra
-      // tentar ganhar espaço - o atrito e a inércia do próprio Ammo é que
-      // fazem o corpo tombar/girar feito um rolamento de verdade.
-      if(!beingHeld && !lyingOnTop && opp.downCause!=='knockout' && opp.getUpProgress < ROLL_AWAY_MAX_PROGRESS){
-        opp.rollAwayCooldown -= dt;
-        if(opp.rollAwayCooldown <= 0){
-          opp.rollAwayCooldown = ROLL_AWAY_COOLDOWN_MIN + Math.random()*(ROLL_AWAY_COOLDOWN_MAX-ROLL_AWAY_COOLDOWN_MIN);
-          const away = new THREE.Vector3(opp.root.position.x-camXZ.x, 0, opp.root.position.z-camXZ.z);
-          if(away.lengthSq() < 0.0001) away.set(Math.random()-0.5, 0, Math.random()-0.5);
-          away.normalize();
-          if(opp.ragdollActive && opp.ragdoll && opp.ragdoll.hip.body){
-            applyRagdollImpulse('hip', away, ROLL_AWAY_IMPULSE);
-            applyRagdollImpulse('torso', away, ROLL_AWAY_IMPULSE*0.6);
-            // ponto de impacto deslocado da lateral do quadril -> gera torque
-            // de verdade (ele GIRA rolando, não só escorrega reto no chão)
-            const hipPos = opp.ragdoll.hip.mesh.getWorldPosition(new THREE.Vector3());
-            const offPoint = hipPos.clone().add(new THREE.Vector3(away.z, 0.12, -away.x).multiplyScalar(0.18));
-            applyRagdollImpulse('hip', new THREE.Vector3(0,1,0), ROLL_AWAY_SPIN_IMPULSE, offPoint);
-          } else {
-            // sem ragdoll físico ativo (fallback, Ammo indisponível): pelo
-            // menos desloca a posição na hora, mantendo a jogabilidade igual
-            opp.root.position.addScaledVector(away, 0.55);
-            clampToBoundary(opp.root.position, 0.25);
-          }
-          setStatus('Ele está tentando rolar pra longe!');
-        }
-      }
-
       const rate = (beingHeld ? GETUP_RATE_PINNED : GETUP_RATE) * style.groundDominance * (lyingOnTop ? MOUNT_WEIGHT_MULT : 1);
       opp.getUpProgress = Math.min(1, opp.getUpProgress + dt*rate);
       if(opp.getUpProgress >= 1){
         startGettingUp();
-        setStatus('Ele está tentando levantar...');
+        setStatus('Ele está levantando!');
       }
     }
   } else if(opp.state==='gettingUp'){
-    // NOVO: levantar biomecânico de verdade, em 3 fases (nada de 0->100
-    // instantâneo). Pode ser interrompido a qualquer momento por agarrão
-    // (handleGrabs), por um golpe bem colocado (handlePunch/handleElbowStrike)
-    // ou por peso em cima (checado logo abaixo) - todos via `interruptGetUp`,
-    // que derruba ele fisicamente de volta a partir da pose exata em que
-    // estava.
+    // PASSO 6: levantar sem script nenhum - a mola de equilíbrio "forte"
+    // (`updateOpponentBalance`, chamada ANTES do step de física em
+    // `stepPhysics`) é quem faz o trabalho de verdade; aqui só CHECA se a
+    // física já conseguiu de fato colocar o quadril na altura/orientação de
+    // pé. Continua interrompível a qualquer momento se você agarrar ele de
+    // novo (`handleGrabs` devolve pro estado 'down' sozinho).
     opp.getUpElapsed += dt;
-    const u = Math.min(1, opp.getUpElapsed/GETUP_DURATION);
 
-    // easing lento-rápido-lento: o corpo demora mais pra sair do chão e mais
-    // pra terminar de esticar, e só "decide" mais rápido no meio do empurrão
-    // - em vez de uma velocidade constante e robótica.
-    const eased = u<0.5 ? 2*u*u : 1-Math.pow(-2*u+2, 2)/2;
-    opp.root.quaternion.slerpQuaternions(opp.getUpFrom, opp.facingBase, eased);
-    opp.root.position.y = THREE.MathUtils.lerp(opp.root.position.y, 0, eased);
+    const hip = opp.ragdoll && opp.ragdoll.hip;
+    let dePe = false;
+    if(hip && hip.body){
+      const ms = hip.body.getMotionState();
+      ms.getWorldTransform(tmpTrans);
+      const alturaOk = tmpTrans.getOrigin().y() > BALANCE_HIP_HEIGHT - GETUP_HEIGHT_TOL;
 
-    const plantArm = opp.handPlantSign>0 ? opp.lArmPivot : opp.rArmPivot;
-    const otherArm = opp.handPlantSign>0 ? opp.rArmPivot : opp.lArmPivot;
+      hip.mesh.getWorldQuaternion(tmpQuat);
+      tmpVec3.set(0,1,0).applyQuaternion(tmpQuat);
+      const emPeOk = tmpVec3.y > GETUP_UPRIGHT_DOT;
 
-    if(u < GETUP_PLANT_T){
-      // FASE 1 - plantar a mão: o braço sorteado estica pra baixo/frente,
-      // buscando apoio real no chão; o outro braço ainda está se organizando.
-      const pt = THREE.MathUtils.clamp(u/GETUP_PLANT_T, 0, 1);
-      plantArm.rotation.x = THREE.MathUtils.lerp(0.1, 1.75, pt);
-      if(plantArm.userData.elbow) plantArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(0.3, 0.2, pt);
-      otherArm.rotation.x = THREE.MathUtils.lerp(0.1, 0.9, pt);
-      if(otherArm.userData.elbow) otherArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(0.3, 1.3, pt);
-      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(0, -0.35, pt);
-      opp.hip.position.y = THREE.MathUtils.lerp(0.5, 0.55, pt);
-    } else if(u < GETUP_PUSH_T){
-      // FASE 2 - empurrar: o peso vai todo pro braço plantado + quadril, que
-      // sobe empurrando o "chão" pra baixo; tronco bem inclinado pra frente
-      // (postura real de quem está fazendo força pra se erguer) com um
-      // cambaleio de equilíbrio genuíno nessa parte mais instável.
-      const pu = THREE.MathUtils.clamp((u-GETUP_PLANT_T)/(GETUP_PUSH_T-GETUP_PLANT_T), 0, 1);
-      plantArm.rotation.x = THREE.MathUtils.lerp(1.75, 1.5, pu);
-      otherArm.rotation.x = THREE.MathUtils.lerp(0.9, 0.5, pu);
-      if(otherArm.userData.elbow) otherArm.userData.elbow.rotation.x = THREE.MathUtils.lerp(1.3, 0.8, pu);
-      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(-0.35, -0.85, Math.sin(pu*Math.PI));
-      opp.hip.position.y = THREE.MathUtils.lerp(0.55, 0.78, pu);
+      const v = hip.body.getLinearVelocity();
+      const paradoOk = (Math.abs(v.x())+Math.abs(v.y())+Math.abs(v.z())) < GETUP_SETTLE_SPEED;
 
-      // some perto do fim da fase (achou o equilíbrio) e é maior quanto mais
-      // machucado ele estiver / menos "domínio de chão" o estilo dele tiver.
-      const dmgWobble = 1 + (1-opp.headHealth/opp.headMaxHealth)*0.6 + (1-opp.bellyHealth/opp.bellyMaxHealth)*0.4;
-      const wobbleWindow = Math.sin(pu*Math.PI);
-      opp.root.rotation.z = Math.sin(performance.now()*0.018)*GETUP_WOBBLE_AMOUNT*wobbleWindow*dmgWobble/style.groundDominance;
-    } else {
-      // FASE 3 - erguer: solta o apoio da mão, estica o corpo e volta pra
-      // postura de guarda normal - só aqui ele realmente termina de pé.
-      const pr = THREE.MathUtils.clamp((u-GETUP_PUSH_T)/(1-GETUP_PUSH_T), 0, 1);
-      opp.lArmPivot.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.rotation.x, GUARD_SHOULDER_HIGH, pr);
-      opp.rArmPivot.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.rotation.x, GUARD_SHOULDER_HIGH, pr);
-      if(opp.lArmPivot.userData.elbow) opp.lArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.lArmPivot.userData.elbow.rotation.x, GUARD_ELBOW_HIGH, pr);
-      if(opp.rArmPivot.userData.elbow) opp.rArmPivot.userData.elbow.rotation.x = THREE.MathUtils.lerp(opp.rArmPivot.userData.elbow.rotation.x, GUARD_ELBOW_HIGH, pr);
-      opp.torsoPivot.rotation.x = THREE.MathUtils.lerp(-0.85, 0, pr);
-      opp.hip.position.y = THREE.MathUtils.lerp(0.78, 0.92, pr);
-      opp.root.rotation.z = THREE.MathUtils.lerp(opp.root.rotation.z, 0, pr);
+      dePe = alturaOk && emPeOk && paradoOk;
     }
+    opp.getUpHoldTimer = dePe ? opp.getUpHoldTimer + dt : 0;
 
-    // NOVO: peso em cima (jogador deitado sobre ele) durante a subida também
-    // derruba de volta - antes só contava dentro do estado 'down'.
-    const lyingOnTopNow = playerGroundState==='down' && playerBodyWorldPos().distanceTo(torsoTopWorldPos()) < MOUNT_PIN_RADIUS;
-    if(lyingOnTopNow){
-      interruptGetUp(new THREE.Vector3(0,0.3,0), 'Você o prendeu no chão de novo!');
-    } else if(u >= 1){
+    // trava de segurança: se depois de um tempão a física não deixar ele
+    // ficar de pé sozinho (preso em algo, canto do mapa etc.), confirma o
+    // estado mesmo assim - sem isso ele podia ficar tentando pra sempre.
+    if(opp.getUpHoldTimer > GETUP_HOLD_TIME || opp.getUpElapsed > GETUP_MAX_TIME){
       opp.state = 'standing';
       opp.stability = STABILITY_MAX;
       opp.getUpProgress = 0;
-      opp.root.position.y = 0;
-      opp.root.rotation.z = 0;
-      opp.torsoPivot.rotation.x = 0;
+      opp.getUpHoldTimer = 0;
       setStatus('Ele levantou!');
     }
   } else if(opp.state==='mounting'){
@@ -3521,6 +4403,18 @@ function updateOpponentAI(dt, camXZ){
   opp.neck.rotation.y = THREE.MathUtils.clamp(yawKick, -1.3, 1.3);
   opp.neck.rotation.z = THREE.MathUtils.clamp(rollKick, -1.0, 1.0);
 
+  // ETAPA VISUAL: cabelo reage com um pouco de atraso ao giro da cabeça -
+  // mola mais solta (rigidez menor) e mais amortecida que a da cabeça, pra
+  // dar a sensação de inércia/chicote do cabelo balançando com o soco.
+  hairSwayXVel += (-yawKickVel*0.55 - rollKickVel*0.35 - hairSwayX*26)*dt - hairSwayXVel*5*dt;
+  hairSwayX += hairSwayXVel*dt;
+  hairSwayZVel += (-pitchKickVel*0.55 - hairSwayZ*26)*dt - hairSwayZVel*5*dt;
+  hairSwayZ += hairSwayZVel*dt;
+  if(opp.hairGroup){
+    opp.hairGroup.rotation.z = THREE.MathUtils.clamp(hairSwayX, -0.6, 0.6);
+    opp.hairGroup.rotation.x = THREE.MathUtils.clamp(hairSwayZ, -0.6, 0.6);
+  }
+
   // NOVO: cerrar/apertar os olhos (mola rápida e rígida - fecha rápido,
   // volta rápido) - achata o grupo do olho na vertical simulando o
   // piscar/apertar forte quando leva um soco fraco na cara.
@@ -3594,6 +4488,7 @@ function resolveEnemyPunch(def){
   if(isPlayerBlocking()){
     const blockedDamage = dmg * BLOCK_DAMAGE_MULT;
     playerHealth = Math.max(0, playerHealth - blockedDamage);
+    spawnScreenBloodSplat(1 - playerHealth/playerMaxHealth);
     flashDazed(0.12); // só um leve sacode - o braço aguentou o golpe
     pulseHaptics();
     playBlockThud();
@@ -3602,6 +4497,7 @@ function resolveEnemyPunch(def){
   }
 
   playerHealth = Math.max(0, playerHealth - dmg);
+  spawnScreenBloodSplat(1 - playerHealth/playerMaxHealth); // respingos de sangue na tela, mais numerosos/maiores quanto mais baixa a vida
   flashDazed(0.55 + (dmg/14)*0.75); // proporcional ao dano - gancho pisca mais forte que jab
   pulseHaptics();
   playPunchSound(opp.attackType, normPower(dmg, 6, 14)); // ETAPA 4: som varia por jab/cross/hook E pela força daquele golpe
@@ -3676,6 +4572,7 @@ function resolveTakedownSuccess(){
   resetTakedownPose();
   playerNeedsToLieDown = true;
   playerHealth = Math.max(0, playerHealth - TAKEDOWN_DAMAGE);
+  spawnScreenBloodSplat(1 - playerHealth/playerMaxHealth);
   flashDazed(0.8);
   pulseHaptics();
   opp.state = 'groundPunishWaiting';
@@ -3693,11 +4590,13 @@ function resolveGroundPunishOnPlayer(){
   const dmg = GROUND_PUNISH_DAMAGE * style.damageMult;
   if(isPlayerBlocking()){
     playerHealth = Math.max(0, playerHealth - dmg*BLOCK_DAMAGE_MULT);
+    spawnScreenBloodSplat(1 - playerHealth/playerMaxHealth);
     flashDazed(0.15);
     playBlockThud();
     return;
   }
   playerHealth = Math.max(0, playerHealth - dmg);
+  spawnScreenBloodSplat(1 - playerHealth/playerMaxHealth);
   flashDazed(0.5 + (dmg/GROUND_PUNISH_DAMAGE)*0.4);
   pulseHaptics();
   playPunchSound('ground', normPower(dmg, 4, 14));
@@ -3720,55 +4619,67 @@ function buildDazedOverlay(){
 }
 buildDazedOverlay();
 
-// ETAPA 4: visão turva conforme a vida do jogador cai. Não existe pipeline
-// de pós-processamento aqui (EffectComposer não se dá bem com o render
-// estéreo do WebXR no Three r128), então em vez de um shader de grayscale
-// de verdade, a "visão turva/preto e branco" é aproximada com planos
-// semitransparentes grudados na câmera - a mesma técnica do `dazedPlane`
-// da ETAPA 2, que já funciona nos dois olhos automaticamente por ser filho
-// da câmera. São 3 camadas, cada uma cuidando de uma parte do efeito:
-//  - grayWashPlane: véu cinza chapado, tira a sensação de saturação/cor.
-//  - vignettePlane: escurece as bordas (visão em túnel/turva), com uma
-//    textura de gradiente radial gerada num canvas (mesmo truque já usado
-//    em `buildBloodTexture`/`buildStatusPanel`).
-//  - blackoutPlane: preto sólido, só pra cobrir de vez a etapa pedir tela
-//    "totalmente preta" quando a vida realmente zera.
-let grayWashPlane, vignettePlane, blackoutPlane;
-function buildVisionVignetteTexture(){
-  const size = 256;
-  const c = document.createElement('canvas'); c.width = c.height = size;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createRadialGradient(size/2, size/2, size*0.18, size/2, size/2, size*0.62);
-  grad.addColorStop(0, 'rgba(0,0,0,0)');
-  grad.addColorStop(1, 'rgba(0,0,0,1)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(c);
+// ETAPA 4 (revisado): a visão turva (véu cinza + vinheta escurecendo as
+// bordas + blackout perto de zerar a vida) foi removida por pedido do
+// jogador - o jogo agora segue "normal" visualmente o tempo todo. No lugar
+// disso entram respingos de sangue na tela (ver mais abaixo,
+// `spawnScreenBloodSplat`/`updateScreenBloodSplats`): pequenas manchas
+// semitransparentes grudadas na câmera (mesma técnica do `dazedPlane`) que
+// aparecem quando o jogador apanha e somem sozinhas depois de um tempo, em
+// vez de qualquer coisa que atrapalhe a visão de forma constante.
+
+// Respingos de sangue na tela - array com os planos ativos, cada um com sua
+// própria "vida" (fade in rápido + fade out gradual). Reaproveita a mesma
+// textura de sangue já usada nos decalques do adversário (`bloodTex`,
+// ver `buildBloodTexture`), só que colada na câmera em vez de no corpo dele.
+let screenBloodSplats = [];
+const SCREEN_BLOOD_LIFETIME = 5; // segundos até sumir totalmente da tela
+function spawnScreenBloodSplat(hurtRatio){
+  // hurtRatio: 0 = jogador ileso, 1 = vida praticamente zerada. Tanto a
+  // QUANTIDADE quanto o TAMANHO dos respingos crescem com isso - machucado
+  // de leve = 1 mancha pequena e discreta; quase nocauteado = vários
+  // respingos grandes cobrindo boa parte da tela.
+  hurtRatio = THREE.MathUtils.clamp(hurtRatio, 0, 1);
+  const count = 1 + Math.round(hurtRatio*4); // 1 (leve) .. 5 (crítico) respingos
+  for(let i=0;i<count;i++){
+    const geo = new THREE.PlaneGeometry(1,1);
+    const mat = new THREE.MeshBasicMaterial({map:bloodTex, color:0xff2200, transparent:true, opacity:0, depthTest:false, depthWrite:false});
+    const mesh = new THREE.Mesh(geo, mat);
+    const baseSize = 0.10 + Math.random()*0.09;
+    mesh.scale.setScalar(baseSize * (0.7 + hurtRatio*1.8)); // maior quanto mais machucado
+    mesh.position.set((Math.random()-0.5)*1.15, (Math.random()-0.5)*0.9, -0.28 - Math.random()*0.01);
+    mesh.rotation.z = Math.random()*Math.PI*2;
+    mesh.renderOrder = 996; // abaixo do dazedPlane (999), mas visível por cima da cena
+    camera.add(mesh);
+    // opacidade máxima também sobe com o quão machucado o jogador está - bem
+    // sutil no começo (pouco transparente pra não atrapalhar a visão) e bem
+    // mais visível quando a vida já está baixa.
+    const maxOpacity = THREE.MathUtils.clamp(0.16 + hurtRatio*0.5, 0.16, 0.7);
+    screenBloodSplats.push({mesh, age:0, fadeInTime:0.1, life:SCREEN_BLOOD_LIFETIME, maxOpacity});
+  }
 }
-function buildVisionOverlay(){
-  const geo = new THREE.PlaneGeometry(1,1);
-
-  const grayMat = new THREE.MeshBasicMaterial({color:0x808080, transparent:true, opacity:0, depthTest:false, depthWrite:false});
-  grayWashPlane = new THREE.Mesh(geo, grayMat);
-  grayWashPlane.position.set(0,0,-0.32);
-  grayWashPlane.renderOrder = 997;
-  camera.add(grayWashPlane);
-
-  const vignetteMat = new THREE.MeshBasicMaterial({map:buildVisionVignetteTexture(), color:0x000000, transparent:true, opacity:0, depthTest:false, depthWrite:false});
-  vignettePlane = new THREE.Mesh(geo, vignetteMat);
-  vignettePlane.position.set(0,0,-0.31);
-  vignettePlane.renderOrder = 998;
-  camera.add(vignettePlane);
-
-  const blackMat = new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0, depthTest:false, depthWrite:false});
-  blackoutPlane = new THREE.Mesh(geo, blackMat);
-  blackoutPlane.position.set(0,0,-0.29);
-  blackoutPlane.renderOrder = 1000; // sempre por cima de tudo, inclusive do dazedPlane (renderOrder 999)
-  camera.add(blackoutPlane);
-
-  scene.add(camera);
+// Atualiza o fade in/out de cada respingo e remove da cena os que já
+// terminaram sua vida (chamado todo frame no loop principal).
+function updateScreenBloodSplats(dt){
+  for(let i=screenBloodSplats.length-1;i>=0;i--){
+    const s = screenBloodSplats[i];
+    s.age += dt;
+    let op;
+    if(s.age < s.fadeInTime){
+      op = (s.age/s.fadeInTime) * s.maxOpacity;
+    } else {
+      const fadeT = THREE.MathUtils.clamp((s.age - s.fadeInTime) / (s.life - s.fadeInTime), 0, 1);
+      op = s.maxOpacity * (1 - fadeT); // some da tela de forma gradual
+    }
+    s.mesh.material.opacity = Math.max(0, op);
+    if(s.age >= s.life){
+      camera.remove(s.mesh);
+      s.mesh.geometry.dispose();
+      s.mesh.material.dispose();
+      screenBloodSplats.splice(i,1);
+    }
+  }
 }
-buildVisionOverlay();
 
 /* ------------------------------ Áudio simples ------------------------------ */
 let audioCtx;
@@ -3866,49 +4777,11 @@ function playBell(){
     o.start(); o.stop(audioCtx.currentTime+1.4);
   }catch(e){}
 }
-// ETAPA 4: som de pressão constante conforme a vida do jogador cai - um
-// tom grave (sensação de "pressão"/abafamento) num GainNode mestre
-// (`pressureGain`) cujo volume sobe/desce suavemente a cada frame de acordo
-// com o dano acumulado (ver `updatePlayerVisionFX`). Criado só uma vez, na
-// primeira vez que a vida cai - fica tocando (com volume 0 quando ileso) em
-// vez de criar/destruir nós de áudio toda hora.
-// AJUSTE: removido o ruído/zumbido agudo filtrado (bandpass em 2200Hz) que
-// tocava junto - o jogador achou que estava "chiando" demais; ficou só o
-// rumble grave de pressão.
-let pressureGain, pressureToneOsc, pressureToneGain;
-function ensurePressureSound(){
-  if(pressureGain) return;
-  ensureAudio();
-  pressureGain = audioCtx.createGain();
-  pressureGain.gain.value = 0;
-  pressureGain.connect(audioCtx.destination);
-
-  pressureToneOsc = audioCtx.createOscillator();
-  pressureToneOsc.type = 'sine';
-  pressureToneOsc.frequency.value = 55; // rumble grave, sensação de pressão
-  pressureToneGain = audioCtx.createGain();
-  pressureToneGain.gain.value = 0.6; // proporção fixa dentro do pressureGain mestre
-  pressureToneOsc.connect(pressureToneGain);
-  pressureToneGain.connect(pressureGain);
-  pressureToneOsc.start();
-}
-// Atualiza a visão turva (3 camadas do overlay) e o volume do som de
-// pressão de acordo com o dano acumulado do jogador (`playerHealth`).
-function updatePlayerVisionFX(){
-  const ratio = playerMaxHealth>0 ? 1 - (playerHealth/playerMaxHealth) : 0; // 0 = ileso, 1 = zerado
-  grayWashPlane.material.opacity = THREE.MathUtils.clamp(ratio*1.25, 0, 0.6);
-  vignettePlane.material.opacity = THREE.MathUtils.clamp(ratio*1.15, 0, 0.9);
-  // preto sólido só perto do fim (últimos 10% de vida) e SEMPRE cheio quando
-  // a vida realmente chega a zero, como a etapa pede ("tela totalmente preta")
-  blackoutPlane.material.opacity = playerHealth<=0 ? 1 : THREE.MathUtils.clamp((ratio-0.9)/0.1, 0, 1)*0.9;
-
-  if(ratio > 0.015){
-    ensurePressureSound();
-    pressureGain.gain.setTargetAtTime(Math.min(0.55, ratio*0.6), audioCtx.currentTime, 0.3);
-  } else if(pressureGain){
-    pressureGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.5);
-  }
-}
+// ETAPA 4 (revisado): o som de pressão/chiado que crescia conforme a vida
+// do jogador caía foi removido totalmente por pedido do jogador - o jogo
+// segue com o áudio normal o tempo todo, sem nenhum efeito extra ligado à
+// vida. A função `updatePlayerVisionFX` também saiu (visão turva removida);
+// no lugar dela o loop principal agora chama `updateScreenBloodSplats`.
 function pulseHaptics(){
   try{
     [controller0, controller1].forEach(c=>{
@@ -3940,7 +4813,7 @@ function render(){
     camVel.copy(camWorld).sub(prevCamPos).divideScalar(Math.max(dt,0.0001));
     prevCamPos.copy(camWorld);
 
-    updatePlayerArms(); // atualiza a posição do cotovelo ANTES de checar cotoveladas
+    updatePlayerArms(dt); // atualiza a posição do cotovelo ANTES de checar cotoveladas
     handleController(0, controller0, dt);
     handleController(1, controller1, dt);
     handleElbowStrike(0, dt);
@@ -3960,7 +4833,7 @@ function render(){
     dazedFlash = Math.max(0, dazedFlash-dt*1.4);
     dazedPlane.material.opacity = dazedFlash*0.35;
   }
-  updatePlayerVisionFX(); // ETAPA 4: visão turva + som de pressão, de acordo com playerHealth
+  updateScreenBloodSplats(dt); // ETAPA 4 (revisado): respingos de sangue na tela, de acordo com playerHealth
 
   statusPanel.position.set(opp.root.position.x, 2.15, opp.root.position.z - 0.6);
   statusPanel.lookAt(camera.getWorldPosition(new THREE.Vector3()));
@@ -3998,19 +4871,6 @@ function handleController(ci, ctrl, dt){
     const headP = headWorldPos();
     if(pos.distanceTo(headP) < HEAD_RADIUS+0.05){
       registerGroundPound(speed, vel, pos);
-      lastPunchTime[ci]=0;
-    }
-  } else if(opp.state==='gettingUp'){
-    // NOVO: acertar ele em cheio enquanto tenta levantar tira o equilíbrio de
-    // novo - não é só um golpe "de graça", quebra a tentativa e ele tomba
-    // fisicamente pra trás (mesma ideia do agarrão, ver interruptGetUp).
-    const headP = headWorldPos();
-    const top = torsoTopWorldPos(), bot = torsoBotWorldPos();
-    const hitHead = pos.distanceTo(headP) < HEAD_RADIUS+0.05;
-    const hitTorso = !hitHead && pos.distanceTo(closestPointOnSegment(pos, top, bot)) < TORSO_RADIUS;
-    if(hitHead || hitTorso){
-      registerGroundPound(speed, vel, pos);
-      interruptGetUp(vel.clone().normalize().multiplyScalar(0.6).setY(0.3), 'Você o derrubou de volta!');
       lastPunchTime[ci]=0;
     }
   }
@@ -4051,18 +4911,6 @@ function handleElbowStrike(ci, dt){
     const headP = headWorldPos();
     if(pos.distanceTo(headP) < HEAD_RADIUS+0.05+ELBOW_RADIUS_BONUS){
       registerGroundPound(speed, vel, pos);
-      lastElbowTime[ci]=0;
-    }
-  } else if(opp.state==='gettingUp'){
-    // NOVO: mesma ideia do soco - cotovelada bem colocada durante a subida
-    // também quebra o equilíbrio e derruba ele de volta fisicamente.
-    const headP = headWorldPos();
-    const top = torsoTopWorldPos(), bot = torsoBotWorldPos();
-    const hitHead = pos.distanceTo(headP) < HEAD_RADIUS+0.05+ELBOW_RADIUS_BONUS;
-    const hitTorso = !hitHead && pos.distanceTo(closestPointOnSegment(pos, top, bot)) < TORSO_RADIUS+ELBOW_RADIUS_BONUS;
-    if(hitHead || hitTorso){
-      registerGroundPound(speed, vel, pos);
-      interruptGetUp(vel.clone().normalize().multiplyScalar(0.6).setY(0.3), 'Você o derrubou de volta!');
       lastElbowTime[ci]=0;
     }
   }
@@ -4106,6 +4954,9 @@ function resetMatch(){
   opp.headHealth = opp.headMaxHealth;
   opp.bellyHealth = opp.bellyMaxHealth;
   playerHealth = playerMaxHealth; // ETAPA 2: vida do jogador também reinicia na revanche
+  // limpa qualquer respingo de sangue ainda visível na tela da luta anterior
+  screenBloodSplats.forEach(s=>{ camera.remove(s.mesh); s.mesh.geometry.dispose(); s.mesh.material.dispose(); });
+  screenBloodSplats.length = 0;
   opp.state = 'standing';
   opp.stateTimer = 0;
   opp.chokeProgress = 0;
@@ -4113,11 +4964,6 @@ function resetMatch(){
   opp.lastHitTime = -999;
   opp.stability = STABILITY_MAX;
   opp.getUpProgress = 0;
-  opp.handPlantSign = 1;             // NOVO
-  opp.rollAwayCooldown = 1.5;        // NOVO
-  opp.torsoPivot.rotation.x = 0;     // NOVO: limpa inclinação residual do levantar
-  opp.root.rotation.z = 0;           // NOVO: limpa cambaleio residual do levantar
-  opp.hip.position.y = 0.92;         // NOVO: garante quadril na altura padrão de pé
   opp.fallVel.set(0,0,0);
   opp.fallAngle = 0;
   // ETAPA 4: reseta o knockdown com recuperação decrescente pra revanche
@@ -4139,22 +4985,18 @@ function resetMatch(){
   const R0 = window.ARENA_R || 3.2;
   opp.root.position.set(0,0,-(R0*0.55));
   opp.root.quaternion.copy(opp.facingBase);
+  reactivateOpponentRagdoll(); // PASSO 1: nova rodada também começa com o ragdoll dinâmico desde já (ver buildOpponentRagdoll)
   pitchKick=0; pitchKickVel=0; yawKick=0; yawKickVel=0; rollKick=0; rollKickVel=0;
+  hairSwayX=0; hairSwayXVel=0; hairSwayZ=0; hairSwayZVel=0;
   eyeSquint=0; eyeSquintVel=0;
   if(opp.eyeGroups) opp.eyeGroups.forEach(g=> g.scale.y = 1);
   torsoLean=0; torsoLeanVel=0; torsoTwist=0; torsoTwistVel=0;
   blockRecoilL=0; blockRecoilLVel=0; blockRecoilR=0; blockRecoilRVel=0;
-  [opp.head, opp.torsoMesh].forEach(m=>{
-    if(m.userData.decals){
-      m.userData.decals.forEach(d=>{ m.remove(d); d.geometry.dispose(); d.material.dispose(); });
-      m.userData.decals = [];
-    }
-    if(m.userData.drips){
-      m.userData.drips.forEach(d=>{ m.remove(d.mesh); d.mesh.geometry.dispose(); d.mesh.material.dispose(); });
-      m.userData.drips = [];
-    }
-  });
-  activeDrips.length = 0; // ETAPA 8 (realismo): limpa a lista global de fios escorrendo pra revanche
+  // ETAPA 9: sangue agora é pintado na pele (por vértice) em vez de
+  // decalques/planos filhos - limpar pra revanche é só zerar a pintura.
+  clearBloodPaint(opp.head);
+  clearBloodPaint(opp.torsoMesh);
+  activeBloodDrips.length = 0; // limpa a lista global de fios escorrendo pra revanche
   if(opp.bloodPool){ scene.remove(opp.bloodPool); opp.bloodPool=null; }
   playBell();
   setStatus('LUTA!');
@@ -4178,7 +5020,7 @@ function updateParticles(dt){
       p.mesh.scale.set(1, 1.4+p.vel.length()*1.1, 1);
     }
     const lifeRatio = Math.max(0, p.life/(p.maxLife||0.7));
-    p.mesh.material.opacity = lifeRatio;
+    p.mesh.material.opacity = lifeRatio * (p.maxOpacity!=null ? p.maxOpacity : 1); // saliva usa maxOpacity menor que sangue (mais translúcida)
     if(!p.streak) p.mesh.scale.setScalar(lifeRatio); // respingo fino também encolhe ao sumir
     if(p.life<=0){
       scene.remove(p.mesh);
@@ -4187,7 +5029,7 @@ function updateParticles(dt){
       activeParticles.splice(i,1);
     }
   }
-  updateBloodDrips(dt); // ETAPA 8 (realismo): fios de sangue escorrendo crescem aos poucos
+  updateBloodDrips(dt); // ETAPA 9: fios de sangue crescem pintando a pele pra baixo aos poucos
 }
 </script>
 </body>
