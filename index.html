@@ -4293,18 +4293,17 @@ function updateOpponentAI(dt, camXZ){
     clampToBoundary(opp.root.position, 0.35);
 
     const t = performance.now()*0.002;
-    opp.torsoPivot.position.y = 0.1 + Math.sin(t)*0.01;
 
-    // NOVO: "base" de verdade nas pernas - em vez de ficar parado feito
-    // estátua, o inimigo fica na ponta dos pés balançando/pisando no lugar
-    // como um boxeador de verdade esperando a abertura (footwork de base:
-    // pequeno bounce vertical no quadril + as duas pernas alternando uma
-    // leve flexão pra frente, fora de fase uma da outra).
-    const bounceT = performance.now()*0.0045;
-    const legBounce = Math.abs(Math.sin(bounceT)) * 0.02; // nunca fica "grudado" no chão
-    opp.hip.position.y = 0.92 + legBounce;
-    if(opp.legMeshes.L) opp.legMeshes.L.rotation.x = Math.sin(bounceT*2) * 0.07;
-    if(opp.legMeshes.R) opp.legMeshes.R.rotation.x = Math.sin(bounceT*2 + Math.PI) * 0.07;
+    // REMOVIDO: bounce/footwork manual (torsoPivot.position.y, hip.position.y,
+    // legMeshes.L/R.rotation.x) que sobrava do sistema ANTES do ragdoll. Esses
+    // meshes (opp.hip, opp.legMeshes.L/R, opp.torsoPivot) hoje são controlados
+    // 100% pela física (`stepPhysics` copia a transform do Ammo pra eles todo
+    // frame) - escrever posição/rotação direto neles aqui brigava com a física
+    // sempre que o motionState vinha nulo num frame ou quando o estado voltava
+    // pra 'standing' (inclusive pelo failsafe de `GETUP_MAX_TIME`), fazendo o
+    // quadril "teleportar" pra `opp.root.position` (que persegue o jogador) em
+    // vez de refletir onde o corpo físico realmente está - era isso que fazia
+    // o adversário aparecer de pé na sua frente em vez de no chão.
 
     // ETAPA 6: postura de guarda real - mãos na frente do rosto por padrão,
     // só abrindo quando ele ataca (ver `opp.attackSwing` abaixo, que
@@ -4388,7 +4387,9 @@ function updateOpponentAI(dt, camXZ){
     opp.root.lookAt(camXZ.x, opp.root.position.y, camXZ.z);
     opp.root.rotation.x = tw*0.4; // mergulha pra frente
     clampToBoundary(opp.root.position, 0.35);
-    opp.hip.position.y = THREE.MathUtils.lerp(0.92, 0.68, tw); // agacha buscando as pernas
+    // REMOVIDO: mesmo problema do bloco 'standing' acima - `opp.hip.position.y`
+    // é o mesh do ragdoll, controlado pela física; escrever direto aqui brigava
+    // com `stepPhysics`.
     // PASSO 5: idem - alvo, não mais rotação direta (braço é ragdoll dinâmico)
     opp.armTargetLocal.L.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
     opp.armTargetLocal.R.x = THREE.MathUtils.lerp(GUARD_SHOULDER_HIGH, 1.15, tw);
