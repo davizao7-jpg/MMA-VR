@@ -505,6 +505,7 @@ const GRAB_ID_TO_RAGDOLL_KEY = {
 };
 
 let gloveMats = [];
+let playerGloves = []; // AJUSTE: luvas desanexadas do controller pra poder travar na superfície do inimigo
 let grabState = [
   {active:false, id:null, part:null, obj:null},
   {active:false, id:null, part:null, obj:null}
@@ -556,6 +557,22 @@ const STANDING_PUNISH_COOLDOWN = 0.9; // ritmo dos golpes enquanto a queda já f
 const MOUNT_RESIST_TIME_NEEDED = 3.2; // segurar o inimigo (agarrão) por esse tempo o derruba de cima de você
 const MOUNT_PIN_RADIUS = 0.55;        // distância "corpo do jogador" <-> tronco do inimigo pra contar como deitado em cima
 const MOUNT_WEIGHT_MULT = 0.4;        // multiplica (reduz) a taxa de "levantar" quando o jogador está de corpo em cima
+
+// CORREÇÃO: MOUNT_PIN_RADIUS/MOUNT_WEIGHT_MULT acima já existiam com esse
+// comentário, mas nenhum lugar do código realmente usava eles pro caso
+// "EU derrubei o inimigo" - só existiam pro caso inverso (opp 'mounting'/
+// 'groundPunish' em cima do jogador). Por isso o inimigo derrubado por VOCÊ
+// sempre tentava levantar no mesmo tempo fixo (`DOWN_RECOVERY_PAUSE`), estando
+// você montado em cima dele ou não - ele nunca "ficava no chão embaixo de
+// você" de verdade. Essa função fecha essa ponta: true quando o "corpo" do
+// jogador (ver playerBodyWorldPos) está perto o bastante do tronco dele pra
+// contar como estar montado em cima. Usada no ramo 'down' de updateOpponentAI.
+function isPlayerMountingOpponent(){
+  if(!opp.torsoMesh) return false;
+  const bodyPos = playerBodyWorldPos();
+  const torsoPos = opp.torsoMesh.getWorldPosition(new THREE.Vector3());
+  return bodyPos.distanceTo(torsoPos) < MOUNT_PIN_RADIUS;
+}
 // true assim que uma queda dá certo, até o jogador REALMENTE deitar no chão
 // (detectado pela altura física da câmera - ver updatePlayerGroundState).
 // Enquanto isso, ele segue tomando golpes de pé (não tem defesa real).
@@ -654,6 +671,8 @@ const FOREARM_LEN   = 0.29; // cotovelo -> mão (controle), em metros
 const tmpElbowDirToHand = new THREE.Vector3();
 const tmpElbowRotAxis = new THREE.Vector3();
 const tmpElbowBendHint = new THREE.Vector3();
+const tmpElbowLocalDir = new THREE.Vector3();
+const tmpElbowInvYaw = new THREE.Quaternion();
 const playerArms = [null, null];
 
 // CORREÇÃO (cotovelo girando junto com o pulso): o Quest só reporta a POSIÇÃO
@@ -1152,6 +1171,51 @@ function applyRagdollImpulse(partKey, dirWorld, magnitude, worldPoint){
   } else {
     part.body.applyCentralImpulse(tmpImpulseVec);
   }
+}
+
+// NOVO: amassa a barriga de verdade (desloca vértice a vértice do
+// LatheGeometry do tronco) em vez de só inclinar o corpo todo. `bellyDent`
+// é uma mola crítica (funda no soco, volta suave) - chamada 1x por frame em
+// updateOpponent. Só mexe na geometria quando o valor é relevante (custo zero
+// quando ele não apanhou na barriga há um tempo).
+function updateBellyDent(dt){
+  bellyDentVel += -bellyDent*26*dt - bellyDentVel*7*dt;
+  bellyDent += bellyDentVel*dt;
+  bellyDent = THREE.MathUtils.clamp(bellyDent, 0, 0.42); // trava o fundo do afundado pra malha nunca virar do avesso
+  if(bellyDent < 0.0005 && Math.abs(bellyDentVel) < 0.0005){
+    if(bellyDent !== 0 || bellyDentVel !== 0){ bellyDent = 0; bellyDentVel = 0; resetTorsoDentGeometry(); }
+    return;
+  }
+  const geo = opp.torsoMesh.geometry;
+  const orig = geo.userData.origPos;
+  const pos = geo.attributes.position.array;
+  const cx = bellyDentLocal.x, cy = bellyDentLocal.y, cz = bellyDentLocal.z;
+  for(let i=0;i<orig.length;i+=3){
+    const ox=orig[i], oy=orig[i+1], oz=orig[i+2];
+    // só a região da barriga (metade de baixo do tronco) participa
+    if(oy > 0.02){ pos[i]=ox; pos[i+1]=oy; pos[i+2]=oz; continue; }
+    const dy = oy-cy, dz = oz-cz;
+    const distXZ = Math.sqrt((ox-cx)*(ox-cx) + dz*dz);
+    const dist = Math.sqrt(distXZ*distXZ + dy*dy*0.4);
+    const falloff = Math.max(0, 1 - dist/0.16);
+    if(falloff<=0){ pos[i]=ox; pos[i+1]=oy; pos[i+2]=oz; continue; }
+    // empurra o vértice pra dentro seguindo a direção radial dele (o perfil
+    // é uma silhueta de revolução, então "pra dentro" = encolher x/z rumo
+    // ao eixo central) - é isso que dá a cara de "afundou de verdade"
+    const push = bellyDent * falloff * falloff;
+    pos[i]   = ox * (1 - push*2.1);
+    pos[i+1] = oy - push*0.4; // também puxa um pouco pra baixo, como uma barriga real cedendo
+    pos[i+2] = oz * (1 - push*1.4);
+  }
+  geo.attributes.position.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+function resetTorsoDentGeometry(){
+  const geo = opp.torsoMesh && opp.torsoMesh.geometry;
+  if(!geo || !geo.userData.origPos) return;
+  geo.attributes.position.array.set(geo.userData.origPos);
+  geo.attributes.position.needsUpdate = true;
+  geo.computeVertexNormals();
 }
 
 // PASSO 1 (atualizado): o ragdoll já é dinâmico e já está anexado na `scene`
@@ -2746,7 +2810,13 @@ function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl = renderer.xr.getController(i);
     const glove = buildMMAGlove(1.0, PLAYER_SKIN_COLOR, getPlayerSkinMat()); // pele morena texturizada, sem costura entre dorso e resto da mão
-    ctrl.add(glove);
+    // AJUSTE: luva não é mais filha do controller - fica solta na scene e
+    // segue a posição/rotação real da mão a cada frame (updatePlayerArms),
+    // mas essa posição pode ser travada na superfície do inimigo (ver
+    // clamp logo acima de tmpVec3Hand) sem afetar a detecção de soco/agarrão,
+    // que continua usando o controller de verdade.
+    scene.add(glove);
+    playerGloves.push(glove);
     scene.add(ctrl);
     controllerGroups.push(ctrl);
     gloveMats.push(glove.userData.padMat);
@@ -2832,7 +2902,14 @@ function solveElbowIK(shoulder, hand, sign, bodyYawQuat, prevElbowDir, out){
   // eixo de dobra: perpendicular à linha ombro->mão, escolhido pra sempre
   // dobrar o cotovelo pra fora/baixo/trás (postura natural de luta), não
   // pra dentro/cima (que ficaria estranho) - relativo ao CORPO do jogador.
-  tmpElbowBendHint.set(sign, -0.4, 0.6).normalize().applyQuaternion(bodyYawQuat);
+  // AJUSTE (cotovelo bugado ao recolher o braço): com a mão perto do ombro
+  // (braço recolhido/guarda) a direção ombro->mão fica curta e instável -
+  // qualquer tremor da mão virava um cotovelo apontando pra cima/lado. Agora
+  // o hint pesa mais pra BAIXO quanto mais perto a mão estiver do ombro
+  // (`retract`), que é como um cotovelo de verdade se comporta quando o
+  // braço recolhe.
+  const retract = THREE.MathUtils.clamp(1 - d/(UPPER_ARM_LEN*0.9), 0, 1);
+  tmpElbowBendHint.set(sign, -0.4 - retract*0.9, 0.6 - retract*0.5).normalize().applyQuaternion(bodyYawQuat);
   tmpElbowRotAxis.crossVectors(tmpElbowDirToHand, tmpElbowBendHint);
   if(tmpElbowRotAxis.lengthSq() < 1e-4){
     // quase paralelo ao hint - usa a direção de dobra do frame anterior
@@ -2844,6 +2921,19 @@ function solveElbowIK(shoulder, hand, sign, bodyYawQuat, prevElbowDir, out){
   tmpElbowRotAxis.normalize();
 
   out.copy(tmpElbowDirToHand).applyAxisAngle(tmpElbowRotAxis, angleA);
+
+  // AJUSTE (cotovelo apontando pro inimigo ao girar a mão): a mão pode girar
+  // livremente, mas um cotovelo de verdade NUNCA aponta pra cima nem pra
+  // frente (na direção do inimigo) - trava a direção numa região anatômica
+  // possível (baixo/trás/lado), igual na vida real, não importa como a mão
+  // esteja virada.
+  tmpElbowInvYaw.copy(bodyYawQuat).invert();
+  tmpElbowLocalDir.copy(out).applyQuaternion(tmpElbowInvYaw);
+  if(tmpElbowLocalDir.y > 0.1) tmpElbowLocalDir.y = 0.1;   // quase nunca acima do ombro
+  if(tmpElbowLocalDir.z > 0.2) tmpElbowLocalDir.z = 0.2;   // não deixa apontar pra frente/inimigo
+  tmpElbowLocalDir.normalize();
+  out.copy(tmpElbowLocalDir).applyQuaternion(bodyYawQuat);
+
   prevElbowDir.copy(out); // guarda a direção real (normalizada, antes de escalar) pro próximo frame
   out.multiplyScalar(UPPER_ARM_LEN).add(shoulder);
 }
@@ -2862,6 +2952,23 @@ function updatePlayerArms(dt){
     if(!arm || !ctrl) continue;
     ctrl.getWorldPosition(tmpVec3Hand);
     ctrl.getWorldQuaternion(tmpQuatCtrl);
+
+    // AJUSTE: impede a mão de atravessar visualmente o corpo do inimigo -
+    // se o alvo da mão cair dentro da esfera da cabeça/tronco dele, empurra
+    // pra fora, até a superfície (a mão real do jogador segue livre, só o
+    // que é desenhado fica travado na "pele" do inimigo).
+    if(opp.head && opp.torsoMesh && opp.state!=='ko' && opp.state!=='finished'){
+      const hPos = headWorldPos();
+      const hDist = tmpVec3Hand.distanceTo(hPos);
+      if(hDist < HEAD_RADIUS && hDist > 1e-5){
+        tmpVec3Hand.sub(hPos).multiplyScalar(HEAD_RADIUS/hDist).add(hPos);
+      }
+      const tPos = opp.torsoMesh.getWorldPosition(new THREE.Vector3());
+      const tDist = tmpVec3Hand.distanceTo(tPos);
+      if(tDist < TORSO_RADIUS && tDist > 1e-5){
+        tmpVec3Hand.sub(tPos).multiplyScalar(TORSO_RADIUS/tDist).add(tPos);
+      }
+    }
 
     // punho estabilizado (ver comentário de CORREÇÃO perto de
     // WRIST_OFFSET_LOCAL) - usado só pro IK do braço/cotovelo, nunca pra luva.
@@ -2895,6 +3002,13 @@ function updatePlayerArms(dt){
     }
     orientSegment(arm.upperMesh, tmpVec3Shoulder, arm.elbowMesh.position);
     orientSegment(arm.foreMesh, arm.elbowMesh.position, tmpVec3Hand);
+
+    // AJUSTE: a luva (visual) segue a posição JÁ TRAVADA da mão, não o
+    // controller cru - é isso que impede ela de atravessar o inimigo.
+    if(playerGloves[ci]){
+      playerGloves[ci].position.copy(tmpVec3Hand);
+      playerGloves[ci].quaternion.copy(tmpQuatCtrl);
+    }
   }
 }
 
@@ -2958,6 +3072,14 @@ const opp = {
   headDodgeTarget: new THREE.Vector3(),
   headDodgeTimer: 0,
   dodgeCooldown: [0,0],
+  // PARTE 1 (esquiva de corpo inteiro): mesmo evento de esquiva que move a
+  // cabeça (acima) agora também desloca o CORPO TODO (`opp.root.position`) -
+  // ver `updateHeadDodge`/`updateOpponentAI`. É aplicado/removido de
+  // `opp.root.position` como um offset cosmético reversível a cada frame
+  // (soma no fim do frame, subtrai no começo do frame seguinte), pra não
+  // interferir na posição "real" de perseguição/IA por baixo.
+  bodyDodgeOffset: new THREE.Vector3(),
+  bodyDodgeTarget: new THREE.Vector3(),
 
   // ETAPA 6: guarda reativa/preditiva (ver consts GUARD_* acima e as funções
   // guardMitigate/reactGuard/currentGuardValue/updatePunchPattern).
@@ -3117,6 +3239,9 @@ function buildOpponent(){
   ];
   const torsoGeo = new THREE.LatheGeometry(torsoProfile, 32);
   torsoGeo.computeVertexNormals();
+  // NOVO: guarda a pose original dos vértices - é a partir dela que o
+  // amassado da barriga (updateBellyDent) empurra pra dentro e solta de volta.
+  torsoGeo.userData.origPos = torsoGeo.attributes.position.array.slice();
   // ETAPA 9: material PRÓPRIO (clonado do skinMat, não compartilhado) só pro
   // tronco - é ele que recebe vertexColors:true, pra permitir pintar sangue
   // direto na pele deste mesh sem afetar pernas/braços/luvas, que continuam
@@ -3608,6 +3733,12 @@ let rollKick = 0, rollKickVel = 0;     // ETAPA VISUAL: a cabeça TODA girando/t
 // domina a cena ali é o próprio giro de cabeça (pitch/yaw/roll acima).
 let eyeSquint = 0, eyeSquintVel = 0;
 let torsoLean = 0, torsoLeanVel = 0;   // tronco se encurvando
+// NOVO: amassado real da barriga - mola crítica (funda->volta) aplicada
+// direto nos vértices do LatheGeometry do tronco, ligada à MESMA magnitude
+// de impulso que vai pro corpo físico do ammo.js (ver applyRagdollImpulse
+// em registerBodyHit) - quanto mais forte o soco, mais fundo afunda.
+let bellyDent = 0, bellyDentVel = 0;
+let bellyDentLocal = new THREE.Vector3(0,-0.15,0.16);
 let torsoTwist = 0, torsoTwistVel = 0; // ETAPA VISUAL: tronco também torce de lado num soco na barriga, não só dobra pra frente
 // ETAPA VISUAL: recuo visual da luva/antebraço do inimigo quando a guarda
 // dele BLOQUEIA um soco seu - puramente cosmético (a física de dano/guarda
@@ -3823,7 +3954,7 @@ function registerHeadHit(speed, controllerVel, hitPoint, powerMult){
   // NOVO: o giro de cabeça agora segue a MESMA curva de força `t` (não a
   // velocidade crua) - um toque fraco (t baixo) quase não vira a cabeça;
   // só um soco rápido de verdade (t alto) faz o rosto virar/girar mesmo.
-  const kickBase = THREE.MathUtils.lerp(0.06, 2.3, Math.pow(t, 1.3));
+  const kickBase = THREE.MathUtils.lerp(0.06, 4.2, Math.pow(t, 1.3)); // NOVO: teto quase 2x maior pra virar a cabeça inteira de verdade nos socos fortes
   const kick = kickBase * (mit.blocked ? 0.4 : 1);
   pitchKickVel += kick * (0.5 + Math.abs(localDir.y));   // soco de baixo pra cima / cima pra baixo
   yawKickVel   += -localDir.x * kick * 1.5;               // soco vindo de um lado (gancho) - cabeça INTEIRA vira
@@ -3895,7 +4026,16 @@ function registerBodyHit(speed, controllerVel, hitPoint, powerMult){
   }
   const dir = controllerVel.clone().normalize();
   // impulso real no corpo físico do tronco do ragdoll - mesma ressalva do soco na cabeça.
-  applyRagdollImpulse('torso', dir, THREE.MathUtils.clamp(speed*0.6, 0.4, 5), hitPoint);
+  const bodyImpulseMag = THREE.MathUtils.clamp(speed*0.6, 0.4, 5);
+  applyRagdollImpulse('torso', dir, bodyImpulseMag, hitPoint);
+  // NOVO: amassado visual da barriga usa a MESMA magnitude que acabou de ir
+  // pro Ammo (bodyImpulseMag) - soco fraco quase não afunda, soco forte de
+  // verdade (perto do teto de 5) afunda bem fundo. Só acumula se pegou
+  // mesmo na barriga (isBelly) e não foi bloqueado.
+  if(isBelly && !mit.blocked){
+    bellyDentLocal.copy(localHit);
+    bellyDentVel += bodyImpulseMag * (isSolarPlexus ? 0.5 : 0.32);
+  }
   pulseHaptics();
   if(mit.blocked){ setStatus('Ele defendeu!'); triggerBlockRecoil(null, power); } // ETAPA VISUAL: cotovelos recuam ao bloquear na barriga
   playPunchSound('body', t);
@@ -4157,11 +4297,21 @@ function updateHeadDodge(dt){
       opp.headDodgeTarget.copy(perp).multiplyScalar(0.14*dodgeAmt).addScaledVector(back, 0.06*dodgeAmt);
       opp.headDodgeTarget.y -= (0.03 + Math.random()*0.03)*dodgeAmt;
       opp.headDodgeTimer = 0.35;
+      // PARTE 1: o CORPO TODO (pés, quadril, tronco - tudo que pende de
+      // `opp.root`) agora escapa junto, na mesma direção da cabeça, só que
+      // com um deslocamento maior (é um passo/esquiva de corpo de verdade,
+      // não só a cabeça se afastando). Sem componente vertical (o corpo não
+      // "afunda" no chão, só escorrega pro lado/pra trás).
+      opp.bodyDodgeTarget.copy(perp).multiplyScalar(0.22*dodgeAmt).addScaledVector(back, 0.16*dodgeAmt);
     }
   }
   if(opp.headDodgeTimer > 0) opp.headDodgeTimer -= dt;
-  else opp.headDodgeTarget.lerp(new THREE.Vector3(), dt*4); // volta ao centro devagar quando a ameaça passa
+  else {
+    opp.headDodgeTarget.lerp(new THREE.Vector3(), dt*4); // volta ao centro devagar quando a ameaça passa
+    opp.bodyDodgeTarget.lerp(new THREE.Vector3(), dt*4);
+  }
   opp.headDodgeOffset.lerp(opp.headDodgeTarget, dt*12);
+  opp.bodyDodgeOffset.lerp(opp.bodyDodgeTarget, dt*8); // um pouco mais lento que a cabeça - corpo tem mais massa/inércia
   opp.neck.position.set(
     NECK_BASE_POS.x + opp.headDodgeOffset.x,
     NECK_BASE_POS.y + opp.headDodgeOffset.y,
@@ -4246,6 +4396,12 @@ function updateOpponentAI(dt, camXZ){
   const aggr = style.aggressiveness * diff.aggressivenessMult;
   const guardLerp = GUARD_POSE_LERP * diff.guardSpeedMult;
   if(opp.state==='standing'){
+    // PARTE 1: desfaz o offset cosmético de esquiva de corpo aplicado no FIM
+    // do frame anterior, antes de qualquer cálculo de IA/movimento/mira -
+    // assim a IA sempre raciocina em cima da posição "real" de perseguição
+    // (sem a esquiva), e a esquiva em si é só um desvio temporário por cima
+    // (ver o `opp.root.position.add(opp.bodyDodgeOffset)` no fim deste bloco).
+    opp.root.position.sub(opp.bodyDodgeOffset);
     opp.root.lookAt(camXZ.x, opp.root.position.y, camXZ.z);
     const toPlayer = new THREE.Vector3(camXZ.x-opp.root.position.x,0,camXZ.z-opp.root.position.z);
     const dist = toPlayer.length();
@@ -4325,10 +4481,18 @@ function updateOpponentAI(dt, camXZ){
     }
 
     opp.root.position.addScaledVector(moveDir, dt*moveSpeed);
-    updateHeadDodge(dt); // ETAPA 5: esquiva de cabeça/tronco reagindo às mãos do jogador
 
-    // mantém o adversário dentro do limite real da sua sala (guardian)
+    // mantém o adversário dentro do limite real da sua sala (guardian) -
+    // clampa a posição "real" ANTES de somar a esquiva de corpo, senão uma
+    // esquiva bem na hora de bater na parede ficaria presa/cortada.
     clampToBoundary(opp.root.position, 0.35);
+
+    updateHeadDodge(dt); // ETAPA 5/PARTE 1: esquiva de cabeça/tronco/corpo reagindo às mãos do jogador
+    // PARTE 1: aplica o offset cosmético de esquiva de corpo (calculado acima
+    // em `updateHeadDodge`) por cima da posição real - é isso que faz o
+    // corpo INTEIRO (quadril, pernas, tronco, tudo que pende de `opp.root`)
+    // escapar de verdade, não só a cabeça.
+    opp.root.position.add(opp.bodyDodgeOffset);
 
     const t = performance.now()*0.002;
 
@@ -4508,7 +4672,13 @@ function updateOpponentAI(dt, camXZ){
       // critérios de 'gettingUp' logo abaixo): se alguma parte dele estiver
       // presa na sua constraint de agarrão, o músculo de levantar simplesmente
       // não vence, sem nenhum script decidindo isso por fora.
-      opp.downElapsed += dt;
+      // CORREÇÃO: se o jogador está com o corpo em cima dele (montado, ver
+      // isPlayerMountingOpponent/MOUNT_PIN_RADIUS), o tempo pra ele tentar
+      // levantar passa a correr bem mais devagar (MOUNT_WEIGHT_MULT) - antes
+      // isso não existia e ele levantava sempre no mesmo tempo fixo, montado
+      // ou não.
+      const recoveryRate = isPlayerMountingOpponent() ? MOUNT_WEIGHT_MULT : 1;
+      opp.downElapsed += dt*recoveryRate;
       if(opp.downElapsed >= DOWN_RECOVERY_PAUSE){
         startGettingUp();
         setStatus('Ele está tentando levantar!');
@@ -4521,6 +4691,10 @@ function updateOpponentAI(dt, camXZ){
     // física já conseguiu de fato colocar o quadril na altura/orientação de
     // pé. Continua interrompível a qualquer momento se você agarrar ele de
     // novo (`handleGrabs` devolve pro estado 'down' sozinho).
+    // CORREÇÃO: mesmo ajuste de peso do ramo 'down' acima - se você continuar
+    // montado nele mesmo depois dele começar a tentar levantar, a confirmação
+    // final de "em pé" (getUpHoldTimer, mais abaixo) também demora mais.
+    const getUpRate = isPlayerMountingOpponent() ? MOUNT_WEIGHT_MULT : 1;
     opp.getUpElapsed += dt;
 
     const hip = opp.ragdoll && opp.ragdoll.hip;
@@ -4539,7 +4713,7 @@ function updateOpponentAI(dt, camXZ){
 
       dePe = alturaOk && emPeOk && paradoOk;
     }
-    opp.getUpHoldTimer = dePe ? opp.getUpHoldTimer + dt : 0;
+    opp.getUpHoldTimer = dePe ? opp.getUpHoldTimer + dt*getUpRate : 0;
 
     // trava de segurança: se depois de um tempão a física não deixar ele
     // ficar de pé sozinho (preso em algo, canto do mapa etc.), confirma o
@@ -4624,8 +4798,11 @@ function updateOpponentAI(dt, camXZ){
   rollKickVel += -rollKick*14*dt - rollKickVel*5*dt;
   rollKick += rollKickVel*dt;
   opp.neck.rotation.x = -pitchKick;
-  opp.neck.rotation.y = THREE.MathUtils.clamp(yawKick, -1.3, 1.3);
-  opp.neck.rotation.z = THREE.MathUtils.clamp(rollKick, -1.0, 1.0);
+  // NOVO: teto bem maior (era ±1.3/±1.0) - soco forte de verdade agora vira
+  // a CABEÇA TODA (opp.neck é pai do crânio inteiro, não só do rosto), quase
+  // uma volta completa no pescoço, não só uma balançada de lado.
+  opp.neck.rotation.y = THREE.MathUtils.clamp(yawKick, -2.7, 2.7);
+  opp.neck.rotation.z = THREE.MathUtils.clamp(rollKick, -2.2, 2.2);
 
   // ETAPA VISUAL: cabelo reage com um pouco de atraso ao giro da cabeça -
   // mola mais solta (rigidez menor) e mais amortecida que a da cabeça, pra
@@ -4653,6 +4830,7 @@ function updateOpponentAI(dt, camXZ){
   torsoTwist += torsoTwistVel*dt;
   opp.torsoPivot.rotation.x = -torsoLean*0.55; // se encurva pra frente quando toma na barriga
   opp.torsoPivot.rotation.y = THREE.MathUtils.clamp(torsoTwist, -0.7, 0.7); // torce de lado no soco na barriga
+  updateBellyDent(dt); // NOVO: amassado real da barriga (vértice a vértice), além da inclinação
 
   // ETAPA VISUAL: recuo cosmético da luva/antebraço quando a guarda bloqueia
   // (mola rápida e rígida - "bate e volta" rapidinho, tipo amortecendo o impacto)
@@ -5261,6 +5439,10 @@ function resetMatch(){
   const R0 = window.ARENA_R || 3.2;
   opp.root.position.set(0,0,-(R0*0.55));
   opp.root.quaternion.copy(opp.facingBase);
+  // PARTE 1: zera a esquiva de corpo/cabeça pra revanche não começar com um
+  // offset "herdado" da luta anterior.
+  opp.headDodgeOffset.set(0,0,0); opp.headDodgeTarget.set(0,0,0); opp.headDodgeTimer = 0;
+  opp.bodyDodgeOffset.set(0,0,0); opp.bodyDodgeTarget.set(0,0,0);
   reactivateOpponentRagdoll(); // PASSO 1: nova rodada também começa com o ragdoll dinâmico desde já (ver buildOpponentRagdoll)
   pitchKick=0; pitchKickVel=0; yawKick=0; yawKickVel=0; rollKick=0; rollKickVel=0;
   hairSwayX=0; hairSwayXVel=0; hairSwayZ=0; hairSwayZVel=0;
@@ -5272,6 +5454,7 @@ function resetMatch(){
   // decalques/planos filhos - limpar pra revanche é só zerar a pintura.
   clearBloodPaint(opp.head);
   clearBloodPaint(opp.torsoMesh);
+  bellyDent = 0; bellyDentVel = 0; resetTorsoDentGeometry(); // NOVO: barriga volta lisa pra revanche
   activeBloodDrips.length = 0; // limpa a lista global de fios escorrendo pra revanche
   if(opp.bloodPool){ scene.remove(opp.bloodPool); opp.bloodPool=null; }
   playBell();
