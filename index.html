@@ -23,6 +23,28 @@
     position:fixed;left:50%;top:60%;transform:translate(-50%,0);color:#ff6666;
     font-size:14px;text-align:center;max-width:80vw;z-index:9;
   }
+  /* SISTEMA DE DETECÇÃO DE BUG: painel fixo que mostra QUALQUER erro JS,
+     promise rejeitada ou aviso de física (console.warn com prefixo [física])
+     de forma completa, sem cortar - resolve o problema de mensagem de erro
+     "cortada" que só aparecia truncada em algum canto da tela/console. Fica
+     escondido até o primeiro erro/aviso acontecer; a partir daí some só se
+     você tocar em "fechar". Overflow com scroll de verdade (não corta texto). */
+  #bugPanel{
+    display:none;position:fixed;left:0;right:0;bottom:0;top:auto;max-height:45vh;
+    background:rgba(10,0,0,.92);color:#ff8888;font:12px/1.4 monospace;
+    z-index:999;box-sizing:border-box;padding:10px;overflow-y:auto;
+    border-top:2px solid #ff3333;white-space:pre-wrap;word-break:break-word;
+  }
+  #bugPanel .bugHead{
+    display:flex;justify-content:space-between;align-items:center;
+    color:#fff;font-weight:bold;margin-bottom:6px;font-family:Arial,Helvetica,sans-serif;
+  }
+  #bugPanel button{
+    background:#b30000;color:#fff;border:1px solid #ff4d4d;border-radius:4px;
+    padding:4px 10px;font-size:12px;cursor:pointer;margin-left:6px;
+  }
+  #bugPanel .bugEntry{border-bottom:1px solid #442222;padding:4px 0;}
+  #bugPanel .bugTime{color:#ff6666;}
   /* NOVO: tela de cenário - é a primeira a aparecer (por isso fica visível
      por padrão, igual o #styleMenu era antes); escolher o cenário retinta a
      arena (ver applyArenaScenario) e libera a tela de estilo em seguida. */
@@ -159,6 +181,116 @@
 <div id="info">Meta Quest 2: abra este link no Navegador do Quest. Soque de verdade. Pra derrubar ELE: encoste a mão na perna dele e aperte o GATILHO pra agarrar, depois puxe de verdade - ele cai com a força e direção do seu puxão. Cuidado: às vezes é ELE que vai pra cima das suas pernas tentando te derrubar - nesse momento (braços dele esticando pra baixo) segure rápido a mão/braço dele (mesmo GATILHO de agarrão) pra evitar a queda. Se não conseguir, DEITE NO CHÃO DE VERDADE pra poder se defender de novo - até deitar, você segue tomando golpe. No chão, agarrado, você pode arrastar o corpo dele pra qualquer lado; solte o gatilho pra largar. Envolva o pescoço com as duas mãos e segure pra finalizar (mata-leão). Configure um limite de área (guardian) de pelo menos 6,5m x 6,5m para melhor aproveitamento.</div>
 <div id="noxr"></div>
 
+<!-- SISTEMA DE DETECÇÃO DE BUG (ver comentário no CSS de #bugPanel acima) -->
+<div id="bugPanel">
+  <div class="bugHead">
+    <span id="bugCount">0 erro(s)/aviso(s)</span>
+    <span>
+      <button id="bugCopyBtn" type="button">Copiar tudo</button>
+      <button id="bugClearBtn" type="button">Limpar</button>
+      <button id="bugCloseBtn" type="button">Fechar</button>
+    </span>
+  </div>
+  <div id="bugLog"></div>
+</div>
+
+<script>
+/* ==========================================================================
+   SISTEMA DE DETECÇÃO DE BUG
+   Fica ANTES de carregar three.js/ammo.js de propósito: se o CDN falhar (por
+   exemplo o jogo estar sendo aberto em http:// sem internet estável, ou o
+   Navegador do Quest bloquear o script), esse coletor já pega isso também.
+   Junta em UM lugar só, completo (sem cortar) e com scroll de verdade:
+     1) qualquer erro de JavaScript não tratado (window.onerror)
+     2) qualquer Promise rejeitada sem .catch (unhandledrejection)
+     3) todo aviso/erro que o próprio jogo já loga no console ('[física] ...'
+        e outros) - reaproveita console.warn/console.error sem removê-los
+   Isso resolve o problema de mensagem de erro aparecer cortada: agora ela
+   fica inteira, num painel na tela, com botão de copiar pra mandar pra quem
+   for consertar o jogo.
+   ========================================================================== */
+(function(){
+  var panel, logEl, countEl, entries = [];
+  function ensureDom(){
+    if(panel) return;
+    panel = document.getElementById('bugPanel');
+    logEl = document.getElementById('bugLog');
+    countEl = document.getElementById('bugCount');
+    var copyBtn = document.getElementById('bugCopyBtn');
+    var clearBtn = document.getElementById('bugClearBtn');
+    var closeBtn = document.getElementById('bugCloseBtn');
+    if(copyBtn) copyBtn.addEventListener('click', function(){
+      var text = entries.join('\n\n');
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).catch(function(){});
+      }
+    });
+    if(clearBtn) clearBtn.addEventListener('click', function(){
+      entries = [];
+      if(logEl) logEl.innerHTML = '';
+      if(countEl) countEl.textContent = '0 erro(s)/aviso(s)';
+      if(panel) panel.style.display = 'none';
+    });
+    if(closeBtn) closeBtn.addEventListener('click', function(){
+      if(panel) panel.style.display = 'none';
+    });
+  }
+  function logEntry(kind, text){
+    ensureDom();
+    var stamp = new Date().toLocaleTimeString();
+    var full = '[' + stamp + '] [' + kind + '] ' + text;
+    entries.push(full);
+    if(logEl){
+      var div = document.createElement('div');
+      div.className = 'bugEntry';
+      var timeSpan = document.createElement('span');
+      timeSpan.className = 'bugTime';
+      timeSpan.textContent = '[' + stamp + '] [' + kind + '] ';
+      div.appendChild(timeSpan);
+      div.appendChild(document.createTextNode(text));
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    if(countEl) countEl.textContent = entries.length + ' erro(s)/aviso(s)';
+    if(panel) panel.style.display = 'block';
+  }
+  window.addEventListener('error', function(ev){
+    var msg = ev.message || 'erro desconhecido';
+    if(ev.filename) msg += '\narquivo: ' + ev.filename + ':' + ev.lineno + ':' + ev.colno;
+    if(ev.error && ev.error.stack) msg += '\n' + ev.error.stack;
+    logEntry('JS ERROR', msg);
+  });
+  window.addEventListener('unhandledrejection', function(ev){
+    var reason = ev.reason;
+    var msg = (reason && (reason.stack || reason.message)) || String(reason);
+    logEntry('PROMISE', msg);
+  });
+  var origWarn = console.warn.bind(console);
+  console.warn = function(){
+    origWarn.apply(console, arguments);
+    try{
+      var text = Array.prototype.slice.call(arguments).map(function(a){
+        if(a instanceof Error) return a.stack || a.message;
+        if(typeof a === 'object') { try{ return JSON.stringify(a); }catch(e){ return String(a); } }
+        return String(a);
+      }).join(' ');
+      logEntry('WARN', text);
+    }catch(e){ /* nunca deixa o coletor de bug ser a causa de outro bug */ }
+  };
+  var origError = console.error.bind(console);
+  console.error = function(){
+    origError.apply(console, arguments);
+    try{
+      var text = Array.prototype.slice.call(arguments).map(function(a){
+        if(a instanceof Error) return a.stack || a.message;
+        if(typeof a === 'object') { try{ return JSON.stringify(a); }catch(e){ return String(a); } }
+        return String(a);
+      }).join(' ');
+      logEntry('ERROR', text);
+    }catch(e){ /* idem */ }
+  };
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/ammo.js@0.0.10/ammo.js"></script>
 <script>
@@ -467,8 +599,12 @@ const GRAB_RADIUS = 0.17;          // distância da mão até a parte do corpo p
 // rígida de verdade) supera o que esse músculo aguenta segurar, o tronco
 // dele TOMBA de verdade; a gente só precisa checar o resultado (orientação/
 // altura real do quadril), não simular a perda de equilíbrio com um número.
-const FALL_UPRIGHT_DOT = 0.35;     // "pra cima" do quadril abaixo disso do "pra cima" do mundo = já tombou de vez, sem recuperação
-const FALL_HEIGHT_RATIO = 0.45;    // ou o quadril físico caiu abaixo dessa fração da altura normal (BALANCE_HIP_HEIGHT) - pego mesmo se o ângulo ainda não bateu
+// AJUSTE (queda mais fácil): valores mais altos aqui = precisa de MENOS
+// inclinação/MENOS queda de altura pra já contar como "caiu". Antes exigia
+// quase tombar de vez (0.35/0.45); agora um desequilíbrio bem mais moderado
+// já é reconhecido como queda de verdade.
+const FALL_UPRIGHT_DOT = 0.62;     // "pra cima" do quadril abaixo disso do "pra cima" do mundo = já tombou de vez, sem recuperação
+const FALL_HEIGHT_RATIO = 0.72;    // ou o quadril físico caiu abaixo dessa fração da altura normal (BALANCE_HIP_HEIGHT) - pego mesmo se o ângulo ainda não bateu
 const CLINCH_DRAG_FACTOR = 0.18;   // o quanto ele se desloca de pé quando você puxa (clinch real)
 const GROUND_DRAG_FACTOR = 0.55;   // o quanto ele se desloca no chão quando você arrasta (peso dele)
 // PASSO 6b: fim de `GETUP_RATE`/`GETUP_RATE_PINNED` (progresso por segundo
@@ -1387,7 +1523,10 @@ const BALANCE_HIP_HEIGHT = 0.92;  // altura alvo do quadril, igual a pose em pé
 const BALANCE_KP_POS = 700, BALANCE_KD_POS = 90;      // mola/amortecedor de posição
 const BALANCE_KP_ROT = 40,  BALANCE_KD_ROT = 6;       // mola/amortecedor de rotação
 const BALANCE_TORSO_ROT_MULT = 0.7;                    // tronco gira mais frouxo que o quadril
-const BALANCE_MAX_FORCE = 900, BALANCE_MAX_TORQUE = 60; // clamp de segurança
+// AJUSTE (queda mais fácil): esse é o "músculo" que resiste ao seu puxão -
+// valores mais baixos = ele resiste bem menos, cai com muito menos força
+// (antes 900/60, agora sensivelmente mais mole).
+const BALANCE_MAX_FORCE = 480, BALANCE_MAX_TORQUE = 30; // clamp de segurança
 
 // PASSO 6: perfil de "esforço" bem MAIOR que o de só manter o equilíbrio em
 // pé - usado exclusivamente enquanto ele está tentando se levantar de
