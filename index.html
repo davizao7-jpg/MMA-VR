@@ -458,17 +458,26 @@ let currentScenarioKey = 'gym';
 
 /* ---- Física de agarrão / equilíbrio / queda real (novo) ---- */
 const GRAB_RADIUS = 0.17;          // distância da mão até a parte do corpo pra poder agarrar
-const STABILITY_MAX = 1.0;
-const STABILITY_RECOVER_RATE = 0.12;   // recupera equilíbrio sozinho (por segundo) quando não é puxado
-const LEG_PULL_FACTOR = 1.15;      // puxar a perna é o jeito mais eficaz de derrubar
-const ARM_PULL_FACTOR = 0.45;      // puxar o braço desequilibra menos
-const TORSO_PULL_FACTOR = 0.70;    // puxar o tronco (clinch/queda de corpo a corpo)
-const HEAD_PULL_FACTOR = 0.55;     // segurar a cabeça (ETAPA 1 - agora é um ponto de agarre válido)
-const HIP_PULL_FACTOR = 0.85;      // segurar o quadril/cintura (perto do centro de gravidade - jogo de quadril de verdade)
+// PASSO 6b: fim do medidor `opp.stability` (número abstrato drenado por
+// fatores manuais por parte - LEG_PULL_FACTOR/ARM_PULL_FACTOR/etc., que
+// existiam aqui). A queda por desequilíbrio agora é 100% lida da física
+// real (ver `checkPhysicalFall`, perto de `updateOpponentBalance`): o
+// "músculo" de equilíbrio (`applyBalanceSpring`) já tem um limite real de
+// torque (`BALANCE_MAX_TORQUE`) - se o seu puxão (agora uma constraint
+// rígida de verdade) supera o que esse músculo aguenta segurar, o tronco
+// dele TOMBA de verdade; a gente só precisa checar o resultado (orientação/
+// altura real do quadril), não simular a perda de equilíbrio com um número.
+const FALL_UPRIGHT_DOT = 0.35;     // "pra cima" do quadril abaixo disso do "pra cima" do mundo = já tombou de vez, sem recuperação
+const FALL_HEIGHT_RATIO = 0.45;    // ou o quadril físico caiu abaixo dessa fração da altura normal (BALANCE_HIP_HEIGHT) - pego mesmo se o ângulo ainda não bateu
 const CLINCH_DRAG_FACTOR = 0.18;   // o quanto ele se desloca de pé quando você puxa (clinch real)
 const GROUND_DRAG_FACTOR = 0.55;   // o quanto ele se desloca no chão quando você arrasta (peso dele)
-const GETUP_RATE = 0.19;           // progresso de "levantar" por segundo, sem ninguém segurando
-const GETUP_RATE_PINNED = 0.02;    // progresso de "levantar" por segundo, se você tiver ele agarrado
+// PASSO 6b: fim de `GETUP_RATE`/`GETUP_RATE_PINNED` (progresso por segundo
+// escrito à mão). Ver `DOWN_RECOVERY_PAUSE` perto do estado 'down' - depois
+// dessa pausa curta (só "se situar" no chão, não é resistência nenhuma) ele
+// SEMPRE tenta levantar; se estiver com uma perna/quadril preso na sua
+// constraint de agarrão, a tentativa falha por física de verdade (o músculo
+// de levantar não consegue vencer sua mão travando o ponto), sem nenhum
+// número nosso decidindo isso.
 const FALL_GRAVITY = 9.8;
 
 // PASSO 4: arraste no chão vira força real sobre o corpo físico agarrado
@@ -500,6 +509,12 @@ let grabState = [
   {active:false, id:null, part:null, obj:null},
   {active:false, id:null, part:null, obj:null}
 ];
+// AGARRÃO FÍSICO REAL: um btPoint2PointConstraint por mão, criado no
+// tryGrab() e destruído no releaseGrab() - ver comentário completo perto de
+// applyGrabConstraintPivot (mais abaixo). Enquanto existir, o Bullet TRAVA de
+// verdade o ponto agarrado do ragdoll na posição da mão - não é mais uma
+// mola/força aproximando, é uma restrição rígida resolvida pelo solver.
+let grabConstraints = [null, null];
 
 // ETAPA 9: luta agarrada avançada - o inimigo agora também pode derrubar o
 // JOGADOR (antes só o jogador derrubava o inimigo), subir em cima e punir no
@@ -589,8 +604,10 @@ let tmpRelVec = null;      // btVector3 reutilizável pro ponto de aplicação (
 // completo perto de onde são inicializados, em initPhysics).
 let tmpForceVec = null;
 let tmpTorqueVec = null;
-let tmpGrabForceVec = null;
-let tmpGrabRelVec = null;
+// AGARRÃO FÍSICO REAL (constraint): reutilizável pro pivô-mundo do agarrão
+// (setPivotB do btPoint2PointConstraint todo frame) - mesmo motivo dos
+// outros tmp*: evita alocar btVector3 novo no heap do Ammo a cada frame.
+let tmpGrabPivotVec = null;
 const tmpVec3 = new THREE.Vector3();       // reutilizável pra ler posição mundial dos meshes do opp
 const tmpQuat = new THREE.Quaternion();    // reutilizável pra ler rotação mundial dos meshes do opp
 const tmpImpulsePivot = new THREE.Vector3(); // reutilizável pra centro de massa na hora do impulso
@@ -793,8 +810,7 @@ function initPhysics(){
   // física) que ainda não seguiam essa regra.
   tmpForceVec = new Ammo.btVector3(0,0,0);
   tmpTorqueVec = new Ammo.btVector3(0,0,0);
-  tmpGrabForceVec = new Ammo.btVector3(0,0,0);
-  tmpGrabRelVec = new Ammo.btVector3(0,0,0);
+  tmpGrabPivotVec = new Ammo.btVector3(0,0,0);
 
   buildPhysicsFloor();
   buildBoundaryColliders(window.BOUNDARY_POLY); // paredes do limite padrão (octógono) - passo 6
@@ -1273,7 +1289,7 @@ function updateRagdollFallSettle(dt){
       opp.state = 'ko';
     } else {
       opp.state = 'down';
-      opp.getUpProgress = 0;
+      opp.downElapsed = 0; // PASSO 6b: substitui `opp.getUpProgress` - ver DOWN_RECOVERY_PAUSE
       // ETAPA 4: se essa queda foi por nocaute (vida zerada), começa a
       // contagem regressiva de 5s aqui (ver ramo 'down' em updateOpponentAI).
       if(opp.downCause==='knockout') opp.koTimer = KNOCKDOWN_TIME;
@@ -1298,9 +1314,10 @@ function updateRagdollFallSettle(dt){
    direto). Isso é uma mola-amortecedor (PD) clássica: quanto mais longe
    do alvo (ou mais rápido se afastando), mais força/torque ela aplica,
    até um limite de segurança - assim "perder o equilíbrio" (por soco,
-   por puxão) passa a ser um resultado real da física, não só um número
-   abstrato (`opp.stability` continua existindo por enquanto só pra
-   decidir QUANDO oficialmente declarar a queda - ver passo 6).
+   por puxão) passa a ser um resultado real da física. PASSO 6b: o antigo
+   número abstrato (`opp.stability`) que decidia QUANDO declarar a queda
+   saiu de vez - quem decide agora é `checkPhysicalFall` (mais abaixo),
+   lendo a pose real do quadril físico.
    --------------------------------------------------------------------- */
 const BALANCE_HIP_HEIGHT = 0.92;  // altura alvo do quadril, igual a pose em pé original
 const BALANCE_KP_POS = 700, BALANCE_KD_POS = 90;      // mola/amortecedor de posição
@@ -1321,6 +1338,13 @@ const GETUP_UPRIGHT_DOT = 0.75;  // o quanto o "pra cima" do quadril precisa apo
 const GETUP_SETTLE_SPEED = 0.6;  // velocidade linear do quadril abaixo disso = "não tá mais se debatendo"
 const GETUP_HOLD_TIME = 0.35;    // tempo seguido cumprindo os 3 critérios acima antes de confirmar 'standing'
 const GETUP_MAX_TIME = 6.0;      // trava de segurança: física pode ter travado ele em algo - confirma mesmo assim
+// PASSO 6b: única espera de tempo real que sobrou no ciclo de queda/levantar
+// - NÃO é resistência nem "resta de física", é só o tempo de ele se situar
+// no chão antes de tentar levantar (dá ao jogador uma janela real pra
+// chegar e agarrar antes dele reagir - sem isso ele tentaria levantar no
+// mesmo instante em que aterrissa). Depois disso ele SEMPRE tenta - se
+// conseguir ou não é 100% física (ver 'gettingUp' + `checkPhysicalFall`).
+const DOWN_RECOVERY_PAUSE = 1.1;
 
 // Aplica uma força (posição) e um torque (rotação) tipo mola-amortecedor num
 // corpo do ragdoll, puxando ele pra `targetPos`/`targetQuat`. `kpPos===0`
@@ -1398,9 +1422,9 @@ function applyBalanceSpring(body, targetPos, targetQuat, kpPos, kdPos, kpRot, kd
 // Atua em pé/atordoado (mola "fraca", só corrige tropeço) e também durante
 // 'gettingUp' (PASSO 6: mola bem mais FORTE - ver BALANCE_*_GETUP -, é o que
 // faz ele voltar a ficar de pé sozinho, sem nenhuma animação por cima).
-// Caído de verdade ('down') continua sem física de equilíbrio nenhuma - só o
-// cabo-de-guerra do `getUpProgress` decide QUANDO ele começa a tentar (ver
-// ramo 'down' de `updateOpponentAI`); a partir daí quem manda é esta função.
+// PASSO 6b: enquanto em pé/atordoado, também CHECA se o músculo perdeu a
+// queda de braço contra o que estiver puxando ele (`checkPhysicalFall`) -
+// substitui o antigo medidor `opp.stability`.
 function updateOpponentBalance(dt){
   if(!opp.ragdoll || !opp.ragdollActive) return;
   const gettingUp = opp.state==='gettingUp';
@@ -1431,7 +1455,48 @@ function updateOpponentBalance(dt){
       RAGDOLL_MASS_BY_PART.torso*9.8*upAssistMult,
       BALANCE_MAX_FORCE, maxTorque);
   }
+
+  // PASSO 6b: só faz sentido checar "ele tombou" enquanto ele estava
+  // TENTANDO ficar em pé (standing/staggered) - durante 'gettingUp' quem
+  // decide sucesso/fracasso já é o próprio ramo 'gettingUp' de
+  // updateOpponentAI (critérios de altura/ângulo/velocidade), não aqui.
+  if(!gettingUp) checkPhysicalFall(hip.body);
 }
+
+// PASSO 6b: substitui o antigo `if(opp.stability<=0)`. Em vez de um número
+// abstrato drenado por fatores manuais por parte do corpo, lê a pose REAL
+// do quadril físico: se o "pra cima" dele já não aponta mais pra cima do
+// mundo (girou demais - o músculo de equilíbrio não aguentou o torque do seu
+// puxão) OU se ele já está fisicamente baixo demais (foi jogado/deitado no
+// chão), considera queda de verdade. Sem essa checagem o corpo ficaria só
+// "deitado no ar" quicando pra sempre contra a própria mola de equilíbrio -
+// aqui a gente reconhece que ele perdeu e desliga a mola (via startPhysicsFall
+// -> 'falling_physics'), deixando a queda terminar de acontecer sem
+// resistência nenhuma, só gravidade/juntas normais.
+function checkPhysicalFall(hipBody){
+  const ms = hipBody.getMotionState();
+  if(!ms) return;
+  ms.getWorldTransform(tmpKinTrans); // reutilizável - não usado em nenhum outro lugar durante standing/staggered/gettingUp
+  const o = tmpKinTrans.getOrigin(), q = tmpKinTrans.getRotation();
+  if(!Number.isFinite(o.y())) return; // mesmo cuidado de `applyBalanceSpring` - corpo pode ter "explodido" numericamente
+
+  const bodyQuat = new THREE.Quaternion(q.x(), q.y(), q.z(), q.w());
+  const upDot = new THREE.Vector3(0,1,0).applyQuaternion(bodyQuat).y;
+  const hipHeight = o.y();
+  const fallen = (upDot < FALL_UPRIGHT_DOT) || (hipHeight < BALANCE_HIP_HEIGHT*FALL_HEIGHT_RATIO);
+  if(!fallen) return;
+
+  // usa a velocidade REAL atual do quadril (resultado da física até aqui,
+  // não um número escolhido por nós) como impulso da queda - ele já estava
+  // caindo por conta própria, `releaseOpponentRagdoll` só continua esse
+  // movimento em vez de resolver algo do zero.
+  const v = hipBody.getLinearVelocity();
+  opp.downCause = 'throw'; // queda por desequilíbrio, não por nocaute - levanta do jeito de sempre
+  startPhysicsFall(new THREE.Vector3(v.x(), v.y(), v.z()), 'down');
+  setStatus('Ele perdeu o equilíbrio e caiu!');
+}
+
+
 
 /* ---------------------------------------------------------------------
    PASSO 5 do "ragdoll ativo": "músculo" do ombro. Mesmo princípio da mola
@@ -2900,14 +2965,15 @@ const opp = {
   punchPattern: { lastTarget:null, targetStreak:0, lastSide:null, sideStreak:0 },
 
   // --- física real de equilíbrio / queda / levantar ---
-  stability: 1.0,                 // 1 = firme em pé, 0 = perde o equilíbrio e cai
+  // PASSO 6b: `stability` (medidor abstrato) e `getUpProgress` (barra de
+  // progresso) saíram - ver `checkPhysicalFall` e `DOWN_RECOVERY_PAUSE`.
+  downElapsed: 0,                 // tempo "se situando" no chão antes de tentar levantar (ver DOWN_RECOVERY_PAUSE)
   fallVel: new THREE.Vector3(),   // velocidade do corpo durante a queda física
   fallAxis: new THREE.Vector3(1,0,0),
   fallAngle: 0,
   fallAngularSpeed: 0,
   fallBaseQuat: new THREE.Quaternion(),
   fallEndState: 'down',
-  getUpProgress: 0,               // 0->1: ele foi empurrando o corpo pra levantar
   getUpElapsed: 0,                // PASSO 6: tempo total tentando ficar de pé sozinho (trava de segurança)
   getUpHoldTimer: 0,              // PASSO 6: tempo seguido já "de pé o suficiente" (debounce antes de confirmar 'standing')
 
@@ -3936,6 +4002,24 @@ function tryGrab(ci){
       const grabPoint = best.obj.getWorldPosition(new THREE.Vector3());
       grabState[ci].ragdollKey = ragdollKey;
       grabState[ci].localOffset = grabPoint.sub(bodyPos).applyQuaternion(invBodyQuat);
+
+      // AGARRÃO FÍSICO REAL: cria a constraint AQUI, uma vez, no momento do
+      // agarrão - não é mais uma força perseguindo a mão todo frame (isso
+      // era `applyGrabPointPull`, removida). `btPoint2PointConstraint` de
+      // corpo único trava o ponto LOCAL `localOffset` (dentro do corpo do
+      // ragdoll) na posição-MUNDO da mão; a cada frame só atualizamos essa
+      // posição-mundo (setPivotB, ver applyGrabConstraintPivot) - o Bullet
+      // resolve a força necessária pra manter isso verdadeiro, junto com
+      // todas as outras juntas (cone-twist) do corpo, no mesmo solver. É
+      // por isso que puxar a perna agora arrasta o quadril/tronco/resto do
+      // corpo de um jeito coerente: não é mais um cálculo nosso, é a física
+      // toda resolvendo junto. A parte agarrada continua podendo GIRAR
+      // livremente ao redor do ponto (só a posição fica presa) - exatamente
+      // como uma mão de verdade segurando um pulso/tornozelo/tecido.
+      const pivotInA = new Ammo.btVector3(grabState[ci].localOffset.x, grabState[ci].localOffset.y, grabState[ci].localOffset.z);
+      const constraint = new Ammo.btPoint2PointConstraint(part.body, pivotInA);
+      physicsWorld.addConstraint(constraint, true);
+      grabConstraints[ci] = constraint;
     }
 
     if(gloveMats[ci]) gloveMats[ci].color.setHex(0x2a8f3a); // verde = agarrado
@@ -3943,113 +4027,67 @@ function tryGrab(ci){
   }
 }
 function releaseGrab(ci){
+  // desfaz a constraint física (se existir) ANTES de zerar o grabState -
+  // sem isso o Bullet continuaria puxando o ponto pra onde a mão estava no
+  // último frame antes de soltar, pra sempre.
+  if(grabConstraints[ci]){
+    physicsWorld.removeConstraint(grabConstraints[ci]);
+    grabConstraints[ci] = null;
+  }
   grabState[ci] = {active:false, id:null, part:null, obj:null};
   if(gloveMats[ci]) gloveMats[ci].color.setHex(0xb87a5c); // AJUSTE: volta pro tom de pele (antes era o vermelho da luva)
 }
 
-// PASSO 3: puxão físico real. Enquanto segura qualquer parte - em pé, caído,
-// tentando levantar, tanto faz - aplica uma força tipo mola-amortecedor
-// DIRETO NO PONTO onde a mão pegou (não no centro do corpo), perseguindo a
-// posição atual da mão de verdade. Isso faz a parte "virar"/seguir a mão
-// (não só transladar), e como a MESMA força vale pra todo mundo, uma parte
-// mais pesada (`RAGDOLL_MASS_BY_PART`) precisa de mais força/puxão real da
-// sua mão pra se mover na mesma velocidade que uma mais leve - é F=ma de
-// verdade, não um fator manual por parte.
-const GRAB_KP = 950, GRAB_KD = 55, GRAB_MAX_FORCE = 2200, GRAB_MAX_TORQUE = 550;
-function applyGrabPointPull(ci){
+// AGARRÃO FÍSICO REAL (substitui a antiga `applyGrabPointPull`, que era uma
+// mola-amortecedor calculada por nós e aplicada como força, com clamps
+// manuais de força/torque só pra evitar o Bullet explodir numericamente).
+// Agora a "trava" entre a mão e o ponto agarrado é uma constraint DE
+// VERDADE (`btPoint2PointConstraint`, criada em tryGrab) - o Bullet já
+// resolve isso no mesmo solver das juntas cone-twist do ragdoll, sem
+// aproximação nossa e sem precisar limitar força/torque à mão: o próprio
+// solver distribui a correção pelas juntas vizinhas em vez de arriscar
+// aplicar um torque absurdo de uma vez. Essa função só faz UMA coisa a
+// cada frame: dizer pro Bullet onde a mão está AGORA (setPivotB) - o
+// "puxão" em si não é mais calculado por nós.
+function applyGrabConstraintPivot(ci){
+  const constraint = grabConstraints[ci];
+  if(!constraint) return;
   const g = grabState[ci];
   const part = g.ragdollKey && opp.ragdoll && opp.ragdoll[g.ragdollKey];
-  if(!part || !part.body || !g.localOffset) return;
   const ctrl = ci===0 ? controller0 : controller1;
-  if(!ctrl) return;
-
-  const body = part.body;
-  const ms = body.getMotionState();
-  if(!ms) return; // CORREÇÃO: mesmo problema de getMotionState() null (ver applyBalanceSpring) - era isso que travava especificamente ao puxar a perna
-  ms.getWorldTransform(tmpTrans);
-  const o = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
-  const bodyPos = new THREE.Vector3(o.x(), o.y(), o.z());
-  const bodyQuat = new THREE.Quaternion(q.x(), q.y(), q.z(), q.w());
-
-  // ponto material atual (o mesmo que foi agarrado, já rotacionado com o corpo)
-  const rotatedOffset = g.localOffset.clone().applyQuaternion(bodyQuat);
-  const worldPoint = bodyPos.clone().add(rotatedOffset);
-
-  const lv = body.getLinearVelocity(), av = body.getAngularVelocity();
-  const linVel = new THREE.Vector3(lv.x(), lv.y(), lv.z());
-  const angVel = new THREE.Vector3(av.x(), av.y(), av.z());
-  const pointVel = linVel.add(angVel.clone().cross(rotatedOffset)); // v do ponto = v do centro + ω×r
+  if(!part || !part.body || !ctrl) return;
 
   const handPos = ctrl.getWorldPosition(new THREE.Vector3());
-  const force = handPos.sub(worldPoint).multiplyScalar(GRAB_KP).sub(pointVel.multiplyScalar(GRAB_KD));
-  force.clampLength(0, GRAB_MAX_FORCE);
-
-  // CORREÇÃO (travava especificamente puxando a perna): `clampLength` acima só
-  // limita a FORÇA - mas o TORQUE de verdade que isso gera no corpo é força ×
-  // braço de alavanca (`rotatedOffset`, a distância do ponto agarrado até o
-  // CENTRO da perna). Segurar o tornozelo/joelho agarra bem mais longe do
-  // centro do que segurar o quadril/tronco direto - a MESMA força de 2200
-  // vira um torque bem maior ali. Um torque grande demais de repente é
-  // exatamente o tipo de coisa que faz o Ammo.js/Bullet "explodir"
-  // numericamente (NaN/infinito - ver comentário completo em
-  // `applyBalanceSpring`) - por isso era ao puxar a PERNA que travava, não ao
-  // segurar o quadril/tronco. Aqui a gente reduz a força (não o torque
-  // diretamente, o Ammo não deixa limitar isso separado) na proporção certa
-  // pra manter o torque resultante sempre dentro de um limite seguro, não
-  // importa quão longe do centro o ponto agarrado esteja.
-  const leverArm = rotatedOffset.length();
-  if(leverArm > 0.001){
-    const maxForceForLever = GRAB_MAX_TORQUE / leverArm;
-    if(maxForceForLever < force.length()) force.clampLength(0, maxForceForLever);
-  }
-
-  body.activate(true);
-  // reutilizáveis - ver CORREÇÃO em initPhysics (antes criava 2 btVector3 novos TODO frame, sem nunca liberar)
-  tmpGrabForceVec.setValue(force.x, force.y, force.z);
-  tmpGrabRelVec.setValue(rotatedOffset.x, rotatedOffset.y, rotatedOffset.z);
-  body.applyForce(tmpGrabForceVec, tmpGrabRelVec);
+  tmpGrabPivotVec.setValue(handPos.x, handPos.y, handPos.z); // reutilizável - ver initPhysics
+  constraint.setPivotB(tmpGrabPivotVec);
+  part.body.activate(true); // garante que o corpo nunca "durma" enquanto está sendo puxado
 }
 
-// Processa os agarrões ativos todo frame. A força física real (puxão no
-// ponto) já resolve sozinha "a parte segue a mão, pesando o que deve pesar"
-// pra qualquer estado - o que muda por estado é só o EFEITO colateral: em
-// pé/atordoado, ainda desgasta `opp.stability` (decide quando ele oficialmente
-// cai - isso vira física de verdade no passo 6) e arrasta o alvo de
-// equilíbrio (`opp.root`, sentido pelo passo 2); caído/tentando levantar,
-// segurar ele durante o "levantar" derruba ele de volta.
+// Processa os agarrões ativos todo frame. A constraint física (ver
+// `applyGrabConstraintPivot`) já resolve sozinha "a parte segue a mão,
+// pesando o que deve pesar" pra qualquer estado - aqui só sobra o efeito
+// colateral de pé/atordoado: arrastar o ALVO de equilíbrio (`opp.root`)
+// pra junto de onde você está puxando, senão a mola de `updateOpponentBalance`
+// ficaria brigando pra voltar ele pro lugar de origem em vez de deixar o
+// puxão vencer. PASSO 6b: não mexe mais em nenhum medidor (`opp.stability`
+// sumiu - ver `checkPhysicalFall`) nem força estado nenhum durante
+// 'down'/'gettingUp' - se você tiver uma parte dele presa na sua mão
+// enquanto ele tenta levantar, é a PRÓPRIA constraint que atrapalha o
+// músculo de levantar (`updateOpponentBalance`), sem script nosso no meio.
 function handleGrabs(dt){
   for(let ci=0; ci<2; ci++){
     const g = grabState[ci];
     if(!g.active) continue;
     if(opp.state==='ko' || opp.state==='finished'){ releaseGrab(ci); continue; }
 
-    applyGrabPointPull(ci);
-
-    const vel = ctrlVel[ci];
-    const horiz = new THREE.Vector3(vel.x, 0, vel.z);
+    applyGrabConstraintPivot(ci);
 
     if(opp.state==='standing' || opp.state==='staggered'){
-      // ETAPA 5: groundDominance também torna mais difícil desequilibrar (dividindo a perda)
-      const groundDom = (opp.style || ENEMY_STYLES.balanced).groundDominance;
-      const factor = g.part==='leg' ? LEG_PULL_FACTOR : (g.part==='torso' ? TORSO_PULL_FACTOR : (g.part==='head' ? HEAD_PULL_FACTOR : (g.part==='hip' ? HIP_PULL_FACTOR : ARM_PULL_FACTOR)));
-      opp.stability -= horiz.length()*factor*dt*0.6/groundDom;
-
+      const vel = ctrlVel[ci];
+      const horiz = new THREE.Vector3(vel.x, 0, vel.z);
       // puxão real também desloca o alvo de equilíbrio (clinch), dá sensação de peso
       opp.root.position.addScaledVector(horiz, dt*CLINCH_DRAG_FACTOR);
       clampToBoundary(opp.root.position, 0.35);
-
-      if(opp.stability <= 0){
-        opp.downCause = 'throw'; // ETAPA 4: queda por desequilíbrio, não por nocaute - levanta do jeito de sempre
-        startPhysicsFall(vel.clone(), 'down');
-        setStatus('Ele perdeu o equilíbrio e caiu!');
-      }
-    } else if(opp.state==='down' || opp.state==='gettingUp'){
-      if(opp.state==='gettingUp'){
-        // segurar ele enquanto tenta levantar o derruba de volta
-        opp.state = 'down';
-        opp.getUpProgress = Math.max(0, opp.getUpProgress - 0.35);
-        setStatus('Você o derrubou de volta!');
-      }
     }
   }
 }
@@ -4341,10 +4379,11 @@ function updateOpponentAI(dt, camXZ){
     opp.guard.headR = THREE.MathUtils.lerp(opp.guard.headR, GUARD_HEAD_BASE, dt*GUARD_DECAY_RATE);
     opp.guard.belly = THREE.MathUtils.lerp(opp.guard.belly, GUARD_BELLY_BASE, dt*GUARD_DECAY_RATE);
 
-    // recupera o equilíbrio sozinho, a não ser que você esteja puxando a perna dele agora
-    // ETAPA 5: groundDominance acelera essa recuperação (osso duro de derrubar)
-    const legBeingPulled = (grabState[0].active && grabState[0].part==='leg') || (grabState[1].active && grabState[1].part==='leg');
-    if(!legBeingPulled) opp.stability = Math.min(STABILITY_MAX, opp.stability + dt*STABILITY_RECOVER_RATE*style.groundDominance);
+    // PASSO 6b: recuperar o "equilíbrio sozinho" não precisa mais de nenhum
+    // código aqui - é o próprio músculo de `updateOpponentBalance` que já
+    // roda todo frame enquanto 'standing'/'staggered' tentando trazer ele de
+    // volta pro alvo; se ninguém estiver puxando, ele simplesmente volta
+    // sozinho pela física (torque/força reais), sem medidor pra "recarregar".
 
     opp.attackTimer -= dt;
     if(opp.attackTimer<=0 && !opp.attacking){
@@ -4461,23 +4500,18 @@ function updateOpponentAI(dt, camXZ){
         setStatus('Ele sobreviveu à contagem e está levantando!');
       }
     } else {
-      // queda normal (desequilíbrio/agarrão): ele pesa e está sempre tentando
-      // se levantar ou virar de novo pra cima - segure-o (agarrado) pra
-      // atrasar isso de verdade, é um cabo de guerra contínuo.
-      // ETAPA 5: groundDominance acelera levantar (osso duro de manter caído);
-      // estilo com groundDominance baixo (ex. boxe) demora mais a se levantar.
-      const beingHeld = grabState[0].active || grabState[1].active;
-      // ETAPA 9: além de segurar com a mão (agarrão), o jogador pode deitar
-      // de verdade em cima dele (corpo-a-corpo, fazendo peso) - detectado
-      // comparando o "corpo" do jogador (playerBodyWorldPos) com o tronco do
-      // inimigo caído. Isso dificulta AINDA MAIS ele levantar, além do
-      // agarrão de mão normal (os dois efeitos se somam).
-      const lyingOnTop = playerGroundState==='down' && playerBodyWorldPos().distanceTo(torsoTopWorldPos()) < MOUNT_PIN_RADIUS;
-      const rate = (beingHeld ? GETUP_RATE_PINNED : GETUP_RATE) * style.groundDominance * (lyingOnTop ? MOUNT_WEIGHT_MULT : 1);
-      opp.getUpProgress = Math.min(1, opp.getUpProgress + dt*rate);
-      if(opp.getUpProgress >= 1){
+      // PASSO 6b: sem cabo de guerra por número - só uma pausa curta e fixa
+      // (`DOWN_RECOVERY_PAUSE`) pra representar ele "se situando" no chão
+      // (dá janela real pro jogador chegar e agarrar antes dele reagir).
+      // Depois disso ele SEMPRE tenta levantar - o que decide se consegue
+      // ou não é 100% físico (`updateOpponentBalance` + `checkPhysicalFall`/
+      // critérios de 'gettingUp' logo abaixo): se alguma parte dele estiver
+      // presa na sua constraint de agarrão, o músculo de levantar simplesmente
+      // não vence, sem nenhum script decidindo isso por fora.
+      opp.downElapsed += dt;
+      if(opp.downElapsed >= DOWN_RECOVERY_PAUSE){
         startGettingUp();
-        setStatus('Ele está levantando!');
+        setStatus('Ele está tentando levantar!');
       }
     }
   } else if(opp.state==='gettingUp'){
@@ -4512,8 +4546,6 @@ function updateOpponentAI(dt, camXZ){
     // estado mesmo assim - sem isso ele podia ficar tentando pra sempre.
     if(opp.getUpHoldTimer > GETUP_HOLD_TIME || opp.getUpElapsed > GETUP_MAX_TIME){
       opp.state = 'standing';
-      opp.stability = STABILITY_MAX;
-      opp.getUpProgress = 0;
       opp.getUpHoldTimer = 0;
       setStatus('Ele levantou!');
     }
@@ -5207,8 +5239,7 @@ function resetMatch(){
   opp.chokeProgress = 0;
   opp.getUpTimer = 0;
   opp.lastHitTime = -999;
-  opp.stability = STABILITY_MAX;
-  opp.getUpProgress = 0;
+  opp.downElapsed = 0;
   opp.fallVel.set(0,0,0);
   opp.fallAngle = 0;
   // ETAPA 4: reseta o knockdown com recuperação decrescente pra revanche
