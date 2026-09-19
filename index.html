@@ -996,6 +996,32 @@ function initPhysics(){
   const solver = new Ammo.btSequentialImpulseConstraintSolver();
   physicsWorld = new Ammo.btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration);
   physicsWorld.setGravity(new Ammo.btVector3(0, -9.8, 0));
+  // CORREÇÃO (raiz do "não dá pra derrubar"): o solver físico vinha com o
+  // padrão do Bullet, 10 iterações. Pra UM boneco simples isso basta, mas
+  // aqui são 7 partes ligadas por 6 juntas cone-twist, MAIS a mola de
+  // equilíbrio (hip/tronco) MAIS a constraint do seu puxão, todas disputando
+  // o mesmo solver a cada frame. Com poucas iterações, a força do puxão se
+  // perde no caminho (absorvida pelas juntas do meio) e quase não chega no
+  // quadril/tronco de verdade - por isso parecia que nada acontecia por mais
+  // forte que puxasse. Mais iterações = o solver converge de verdade antes
+  // de decidir a posição final do frame.
+  physicsWorld.getSolverInfo().set_m_numIterations(30);
+  // CORREÇÃO (ele "crescendo" durante a luta): cada junta (cone-twist) do
+  // ragdoll mantém dois pontos (um em cada corpo) colados um no outro -
+  // isso é corrigido pelo solver a cada frame, mas só até um certo grau,
+  // controlado pelo ERP ("Error Reduction Parameter"). Com o padrão do
+  // motor (baixo), um impacto forte (soco, queda, levantada) empurra as
+  // partes um pouco além do que a junta consegue corrigir NAQUELE frame -
+  // e como o corpo nunca "dorme" (fica sempre ativo), esse pequeno erro
+  // residual nunca se resolve sozinho, só vai se somando a cada golpe/queda/
+  // levantada ao longo da luta. Visualmente isso aparece como as partes do
+  // corpo (braço, perna, tronco) ficando cada vez mais afastadas umas das
+  // outras - ou seja, ele "esticando"/parecendo maior aos poucos. Com o ERP
+  // bem mais alto, o solver puxa as juntas de volta pro lugar de forma bem
+  // mais agressiva a cada frame, sem deixar esse erro sobrar de um frame
+  // pro outro.
+  physicsWorld.getSolverInfo().set_m_erp(0.85);
+  physicsWorld.getSolverInfo().set_m_erp2(0.85); // idem, mas pra contato/colisão (chão etc.)
 
   tmpTrans = new Ammo.btTransform();
   tmpKinTrans = new Ammo.btTransform(); // reutilizável pra escrever a pose cinemática do ragdoll
@@ -1298,6 +1324,18 @@ function buildOpponentRagdoll(){
     armL:  {body: armLBody,  mesh: opp.lArmPivot,  dynamic: true},
     armR:  {body: armRBody,  mesh: opp.rArmPivot,  dynamic: true},
   };
+
+  // CORREÇÃO (ele "crescendo" durante a luta): guarda, uma vez só, a
+  // distância "anatômica" (de repouso) de cada parte até o quadril, nesse
+  // exato momento em que ele acabou de ser montado (corpo ainda no tamanho
+  // certo). Isso serve de referência pra `correctRagdollDrift` mais abaixo
+  // saber quando uma parte esticou longe demais da junta e precisa ser
+  // puxada de volta.
+  opp.ragdollRestDist = {};
+  for(const key in opp.ragdoll){
+    if(key==='hip') continue;
+    opp.ragdollRestDist[key] = opp.ragdoll[key].mesh.getWorldPosition(new THREE.Vector3()).distanceTo(hipPos);
+  }
 
   for(const key in opp.ragdoll){
     const part = opp.ragdoll[key];
@@ -1718,7 +1756,17 @@ function updateOpponentBalance(dt){
   // TENTANDO ficar em pé (standing/staggered) - durante 'gettingUp' quem
   // decide sucesso/fracasso já é o próprio ramo 'gettingUp' de
   // updateOpponentAI (critérios de altura/ângulo/velocidade), não aqui.
-  if(!gettingUp) checkPhysicalFall(hip.body);
+  // CORREÇÃO (não dá pra derrubar puxando cabeça/tronco/braço): antes só
+  // checava o QUADRIL. Segurar o pulso/cotovelo/cabeça dele gira principalmente
+  // o TRONCO (mais perto desses pontos na cadeia de juntas) - o quadril mal se
+  // mexe até o tronco já estar bem tombado. Agora conta como queda se
+  // QUALQUER um dos dois (quadril OU tronco) passar do limite.
+  if(!gettingUp){
+    checkPhysicalFall(hip.body);
+    if(opp.state==='standing' || opp.state==='staggered'){ // a primeira chamada pode já ter mudado o estado
+      if(torso && torso.body) checkPhysicalFall(torso.body);
+    }
+  }
 }
 
 // PASSO 6b: substitui o antigo `if(opp.stability<=0)`. Em vez de um número
@@ -1860,6 +1908,53 @@ function clampRagdollVelocities(){
     if(aSpeed > RAGDOLL_MAX_ANGULAR_VEL){
       const s = RAGDOLL_MAX_ANGULAR_VEL/aSpeed;
       body.setAngularVelocity(new Ammo.btVector3(ax*s, ay*s, az*s));
+    }
+  }
+}
+
+// CORREÇÃO (ele "crescendo"/esticando durante a luta): mesmo com o ERP do
+// solver mais alto (ver initPhysics), erro residual das juntas ainda pode
+// sobrar aos poucos ao longo de uma luta inteira, principalmente em
+// momentos de impacto forte (queda, levantada). Essa função compara a
+// distância ATUAL de cada parte até o quadril com a distância anatômica
+// de repouso (guardada em `opp.ragdollRestDist` na hora que o ragdoll foi
+// montado) - se esticou demais, puxa essa parte de volta pra perto (na
+// mesma direção que já estava, só encurtando) e zera a velocidade dela.
+// Chamada só nos momentos "de respiro" da luta (ele acabou de levantar),
+// não a cada frame - fazer isso toda hora ficaria brusco/visível.
+function correctRagdollDrift(){
+  if(!opp.ragdoll || !opp.ragdollRestDist) return;
+  const hip = opp.ragdoll.hip;
+  if(!hip || !hip.body) return;
+  const hipMs = hip.body.getMotionState();
+  if(!hipMs) return;
+  hipMs.getWorldTransform(tmpTrans);
+  const ho = tmpTrans.getOrigin();
+  const hipPos = new THREE.Vector3(ho.x(), ho.y(), ho.z());
+  if(!Number.isFinite(hipPos.x)) return;
+
+  for(const key in opp.ragdoll){
+    if(key==='hip') continue;
+    const part = opp.ragdoll[key];
+    const restDist = opp.ragdollRestDist[key];
+    if(!part.body || !restDist) continue;
+    const ms = part.body.getMotionState();
+    if(!ms) continue;
+    ms.getWorldTransform(tmpKinTrans);
+    const o = tmpKinTrans.getOrigin();
+    const partPos = new THREE.Vector3(o.x(), o.y(), o.z());
+    if(!Number.isFinite(partPos.x)) continue;
+    const dist = partPos.distanceTo(hipPos);
+    // tolera até 35% a mais que a distância de repouso (movimento normal de
+    // luta já estica um pouco as juntas de verdade) - só corrige o excesso.
+    if(dist > restDist*1.35 && dist > 0.001){
+      const dir = partPos.clone().sub(hipPos).divideScalar(dist);
+      const corrected = hipPos.clone().addScaledVector(dir, restDist*1.1);
+      tmpKinTrans.setOrigin(new Ammo.btVector3(corrected.x, corrected.y, corrected.z));
+      ms.setWorldTransform(tmpKinTrans);
+      part.body.setWorldTransform(tmpKinTrans);
+      part.body.setLinearVelocity(new Ammo.btVector3(0,0,0));
+      part.body.setAngularVelocity(new Ammo.btVector3(0,0,0));
     }
   }
 }
@@ -4945,6 +5040,7 @@ function updateOpponentAI(dt, camXZ){
     if(opp.getUpHoldTimer > GETUP_HOLD_TIME || opp.getUpElapsed > GETUP_MAX_TIME){
       opp.state = 'standing';
       opp.getUpHoldTimer = 0;
+      correctRagdollDrift(); // CORREÇÃO: puxa de volta qualquer junta que tenha "esticado" durante a queda/levantada
       setStatus('Ele levantou!');
     }
   } else if(opp.state==='mounting'){
