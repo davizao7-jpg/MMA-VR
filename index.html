@@ -1005,23 +1005,34 @@ function initPhysics(){
   // quadril/tronco de verdade - por isso parecia que nada acontecia por mais
   // forte que puxasse. Mais iterações = o solver converge de verdade antes
   // de decidir a posição final do frame.
-  physicsWorld.getSolverInfo().set_m_numIterations(30);
+  //
   // CORREÇÃO (ele "crescendo" durante a luta): cada junta (cone-twist) do
   // ragdoll mantém dois pontos (um em cada corpo) colados um no outro -
   // isso é corrigido pelo solver a cada frame, mas só até um certo grau,
-  // controlado pelo ERP ("Error Reduction Parameter"). Com o padrão do
-  // motor (baixo), um impacto forte (soco, queda, levantada) empurra as
-  // partes um pouco além do que a junta consegue corrigir NAQUELE frame -
-  // e como o corpo nunca "dorme" (fica sempre ativo), esse pequeno erro
-  // residual nunca se resolve sozinho, só vai se somando a cada golpe/queda/
-  // levantada ao longo da luta. Visualmente isso aparece como as partes do
-  // corpo (braço, perna, tronco) ficando cada vez mais afastadas umas das
-  // outras - ou seja, ele "esticando"/parecendo maior aos poucos. Com o ERP
-  // bem mais alto, o solver puxa as juntas de volta pro lugar de forma bem
-  // mais agressiva a cada frame, sem deixar esse erro sobrar de um frame
-  // pro outro.
-  physicsWorld.getSolverInfo().set_m_erp(0.85);
-  physicsWorld.getSolverInfo().set_m_erp2(0.85); // idem, mas pra contato/colisão (chão etc.)
+  // controlado pelo ERP ("Error Reduction Parameter"). Com ERP mais alto o
+  // solver puxa as juntas de volta pro lugar de forma bem mais agressiva a
+  // cada frame, sem deixar erro residual sobrar de um frame pro outro (o
+  // que aparecia como o corpo dele "esticando"/parecendo maior aos poucos).
+  //
+  // CORREÇÃO (regressão): cada ajuste abaixo tem seu PRÓPRIO try/catch -
+  // essa build específica do Ammo.js pode não expor um método ou outro
+  // (varia de build pra build, já que não são todos "core"), e antes um
+  // único método ausente jogava um erro que derrubava a inicialização
+  // INTEIRA da física, fazendo o jogo voltar a avisar "Ammo não carregou"
+  // mesmo com o arquivo certo no lugar. Agora, se um ajuste específico não
+  // existir nessa build, só ELE é pulado (com aviso no painel de bug) - o
+  // resto da física liga normalmente.
+  let solverInfo = null;
+  try{ solverInfo = physicsWorld.getSolverInfo(); }
+  catch(e){ console.warn('[física] getSolverInfo não suportado nessa build do Ammo - seguindo com os padrões do solver.'); }
+  if(solverInfo){
+    try{ solverInfo.set_m_numIterations(30); }
+    catch(e){ console.warn('[física] set_m_numIterations não suportado nessa build do Ammo - seguindo com o padrão.'); }
+    try{ solverInfo.set_m_erp(0.85); }
+    catch(e){ console.warn('[física] set_m_erp não suportado nessa build do Ammo - seguindo com o padrão.'); }
+    try{ solverInfo.set_m_erp2(0.85); }
+    catch(e){ console.warn('[física] set_m_erp2 não suportado nessa build do Ammo - seguindo com o padrão.'); }
+  }
 
   tmpTrans = new Ammo.btTransform();
   tmpKinTrans = new Ammo.btTransform(); // reutilizável pra escrever a pose cinemática do ragdoll
