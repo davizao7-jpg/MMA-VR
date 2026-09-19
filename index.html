@@ -292,7 +292,58 @@
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/ammo.js@0.0.10/ammo.js"></script>
+<script>
+/* ==========================================================================
+   CARREGADOR RESILIENTE DO AMMO.JS (física)
+   Antes existia UM <script src> fixo apontando pra um único CDN. Se esse
+   CDN especificamente estivesse fora do ar, bloqueado pela rede do celular,
+   ou bloqueado por alguma extensão do navegador, a física inteira do jogo
+   ficava fora - sem segunda chance. Agora ele tenta, em ordem, vários
+   espelhos independentes do MESMO arquivo (provedores diferentes: jsdelivr
+   servindo o pacote do npm, unpkg, e o próprio jsdelivr servindo direto do
+   GitHub). Cada tentativa (sucesso ou falha) fica registrada no painel de
+   bug, pra dar pra ver exatamente até onde chegou da próxima vez.
+   window.__ammoReadyPromise resolve `true` assim que a variável global
+   Ammo existir de verdade, ou `false` se TODOS os espelhos falharem -
+   initAmmoSafely() (lá embaixo, no jogo) espera esse resultado antes de
+   decidir se a física liga ou não.
+   ========================================================================== */
+window.__ammoReadyPromise = (function(){
+  var mirrors = [
+    './ammo.js',   // arquivo local, hospedado no seu próprio repositório - ver instruções abaixo
+    'https://cdn.jsdelivr.net/npm/ammo.js@0.0.10/builds/ammo.js',
+    'https://unpkg.com/[email protected]/builds/ammo.js',
+    'https://cdn.jsdelivr.net/gh/kripken/ammo.js@main/builds/ammo.js'
+  ];
+  function tryOne(index){
+    return new Promise(function(resolve){
+      if(index >= mirrors.length){
+        console.warn('[física] Todos os espelhos do Ammo.js falharam - sem física nesta sessão.');
+        resolve(false);
+        return;
+      }
+      var url = mirrors[index];
+      var s = document.createElement('script');
+      s.src = url;
+      s.onload = function(){
+        if(typeof window.Ammo !== 'undefined'){
+          console.log('[física] Ammo.js carregado de: ' + url);
+          resolve(true);
+        } else {
+          console.warn('[física] Espelho carregou mas não definiu Ammo: ' + url);
+          tryOne(index+1).then(resolve);
+        }
+      };
+      s.onerror = function(){
+        console.warn('[física] Falha ao carregar Ammo.js de: ' + url);
+        tryOne(index+1).then(resolve);
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return tryOne(0);
+})();
+</script>
 <script>
 /* ==========================================================================
    OCTÓGONO VR - protótipo de luta de MMA em WebXR (Meta Quest 2)
@@ -904,9 +955,13 @@ function init(){
 // devolve o módulo já pronto, de forma síncrona - sem .then nenhum. Chamar
 // .then em cima do retorno errado era exatamente o que travava tudo antes
 // do renderer.setAnimationLoop rodar, e por isso a tela ficava preta.
-function initAmmoSafely(){
+async function initAmmoSafely(){
   try{
-    if(typeof Ammo !== 'function'){
+    // espera o carregador com múltiplos espelhos (ver <script> logo no
+    // início do arquivo) terminar de tentar - só depois disso faz sentido
+    // checar se `Ammo` existe de verdade.
+    const loaded = window.__ammoReadyPromise ? await window.__ammoReadyPromise : (typeof Ammo === 'function');
+    if(!loaded || typeof Ammo !== 'function'){
       console.warn('[física] Ammo.js não carregou (CDN indisponível?). Jogo segue sem física.');
       return;
     }
@@ -2945,9 +3000,34 @@ function getPlayerSkinMat(){
   }
   return playerSkinMat;
 }
+// CORREÇÃO (mãos trocadas): antes controller0/controller1 eram só
+// `renderer.xr.getController(0)` e `getController(1)`, na ordem "crua" que o
+// navegador/headset relata os controles em `session.inputSources`. Essa
+// ordem NÃO é garantida como "esquerda primeiro" - varia por navegador e,
+// às vezes, muda de uma sessão VR pra outra, mesmo no mesmo headset. Como o
+// resto do jogo assume ci=0 -> mão esquerda e ci=1 -> mão direita (braço,
+// cotovelo, cor da luva etc), quando a ordem vinha invertida sua mão
+// esquerda de verdade acabava controlando o braço direito na tela e
+// vice-versa. Agora cada controle grava sua própria mão real (evento
+// 'connected', que traz `handedness`: 'left'/'right') e controller0/
+// controller1 são resolvidos a partir disso, não da ordem bruta.
+function syncControllerHandedness(){
+  controllerGroups.forEach(c=>{
+    if(c.userData.handSlot===0) controller0 = c;
+    else if(c.userData.handSlot===1) controller1 = c;
+  });
+}
 function buildControllers(){
   for(let i=0;i<2;i++){
     const ctrl = renderer.xr.getController(i);
+    ctrl.userData.handSlot = i; // chute inicial (ordem bruta), corrigido assim que a handedness real chegar logo abaixo
+    ctrl.addEventListener('connected', (ev)=>{
+      const handedness = ev.data && ev.data.handedness;
+      if(handedness==='left') ctrl.userData.handSlot = 0;
+      else if(handedness==='right') ctrl.userData.handSlot = 1;
+      // handedness 'none' (ex: rastreador extra) mantém o chute pela ordem
+      syncControllerHandedness();
+    });
     const glove = buildMMAGlove(1.0, PLAYER_SKIN_COLOR, getPlayerSkinMat()); // pele morena texturizada, sem costura entre dorso e resto da mão
     // AJUSTE: luva não é mais filha do controller - fica solta na scene e
     // segue a posição/rotação real da mão a cada frame (updatePlayerArms),
@@ -2960,11 +3040,16 @@ function buildControllers(){
     controllerGroups.push(ctrl);
     gloveMats.push(glove.userData.padMat);
     // GATILHO (trigger/"select" no WebXR): aperta = tenta agarrar; solta = larga
-    ctrl.addEventListener('selectstart', ()=>tryGrab(i));
-    ctrl.addEventListener('selectend', ()=>releaseGrab(i));
+    // CORREÇÃO: usa ctrl.userData.handSlot (a mão REAL desse controle
+    // específico) em vez do índice fixo `i` do loop - assim o gatilho
+    // sempre aciona o braço certo na tela, mesmo se a ordem bruta vier
+    // trocada.
+    ctrl.addEventListener('selectstart', ()=>tryGrab(ctrl.userData.handSlot));
+    ctrl.addEventListener('selectend', ()=>releaseGrab(ctrl.userData.handSlot));
   }
   controller0 = controllerGroups[0];
   controller1 = controllerGroups[1];
+  syncControllerHandedness();
 }
 
 /* ------------------------------ Braço do próprio jogador (com cotovelo calculado) ------------------------------
