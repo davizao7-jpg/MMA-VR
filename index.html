@@ -1066,9 +1066,18 @@ function initPhysics(){
 }
 
 // Chão físico estático (massa 0) do tamanho do octógono, na mesma altura do tapete visual.
+// CORREÇÃO (ele sumindo abaixo do chão na queda, só o pé aparecendo): o
+// chão físico era bem fino (10cm) - numa queda rápida (o puxão solta ele
+// com velocidade real, ou o impulso da queda por desequilíbrio), o corpo
+// podia se mover, num único passo de física, mais do que essa espessura
+// toda - atravessando o chão de baixo pra cima sem NUNCA colidir com ele
+// de verdade (o motor só detecta colisão comparando posição de um passo
+// pro outro; se o "salto" for maior que o chão, ele nunca vê o chão no
+// meio do caminho). Deixando o chão bem mais grosso, esse "salto" precisa
+// ser bem maior pra atravessar - na prática deixa de acontecer.
 function buildPhysicsFloor(){
   const R0 = window.ARENA_R || 3.2;
-  const thickness = 0.1;
+  const thickness = 1.2;
 
   const shape = new Ammo.btBoxShape(new Ammo.btVector3(R0, thickness/2, R0));
   const transform = new Ammo.btTransform();
@@ -1211,6 +1220,21 @@ function buildRagdollBody(shape, x, y, z, mass){
   body.setDamping(0.15, 0.5); // linear, angular - evita tremedeira
 
   body.setActivationState(4); // DISABLE_DEACTIVATION - nunca "dorme"
+
+  // CORREÇÃO (ele sumindo abaixo do chão, só o pé aparecendo): segunda
+  // camada de proteção contra atravessar o chão numa queda rápida (CCD =
+  // Continuous Collision Detection). Sem isso, o motor só checa colisão
+  // comparando a posição de um frame pro outro - um corpo pequeno (braço,
+  // cabeça) se movendo rápido o bastante pode "pular" o chão inteiro sem
+  // nunca ser detectado no meio do caminho. Com CCD, sempre que o corpo se
+  // mover mais que `ccdMotionThreshold` num frame, o motor faz uma checagem
+  // extra (varrendo uma esfera do raio informado) pra garantir que não
+  // atravessou nada sólido nesse meio do caminho.
+  try{
+    const radiusGuess = 0.1; // aproximação segura pro menor raio usado nas partes do ragdoll
+    body.setCcdMotionThreshold(radiusGuess);
+    body.setCcdSweptSphereRadius(radiusGuess*0.6);
+  }catch(e){ /* build sem suporte a CCD - segue sem essa camada extra */ }
 
   physicsWorld.addRigidBody(body);
   return body;
@@ -1740,6 +1764,19 @@ function updateOpponentBalance(dt){
   const hip = opp.ragdoll.hip, torso = opp.ragdoll.torso;
   if(!hip || !hip.body) return;
 
+  // CORREÇÃO RAIZ (não dá pra derrubar puxando): até agora, mesmo puxando
+  // com a constraint do agarrão, a mola de equilíbrio continuava competindo
+  // full-force contra sua mão o tempo todo - um cabo de guerra que, na
+  // prática, quase sempre ela vencia (é uma mola PID rodando todo frame,
+  // seu puxão é só uma pessoa segurando). Agora, se QUALQUER mão estiver
+  // agarrada em QUALQUER parte dele (`grabState`), a mola de hip/tronco
+  // desliga PRA VALER enquanto durar o agarrão - sem competir com nada,
+  // é só gravidade + as juntas normais do corpo contra o seu puxão. Solta
+  // a mão sem ele ter caído? A mola volta a segurá-lo (ele "recupera o
+  // equilíbrio" sozinho, como já acontecia). `checkPhysicalFall` continua
+  // rodando durante o agarrão pra detectar a queda assim que ela acontecer.
+  const beingGrabbed = (grabState[0] && grabState[0].active) || (grabState[1] && grabState[1].active);
+
   const targetPos = opp.root.position.clone();
   targetPos.y += BALANCE_HIP_HEIGHT;
   const targetQuat = opp.root.quaternion.clone();
@@ -1750,17 +1787,19 @@ function updateOpponentBalance(dt){
   const maxTorque = gettingUp ? BALANCE_MAX_TORQUE_GETUP : BALANCE_MAX_TORQUE;
   const upAssistMult = gettingUp ? BALANCE_UP_ASSIST_GETUP_MULT : 1;
 
-  applyBalanceSpring(hip.body, targetPos, targetQuat,
-    BALANCE_KP_POS, BALANCE_KD_POS, kpRot, kdRot, hipMass*9.8*upAssistMult,
-    BALANCE_MAX_FORCE, maxTorque);
-
-  if(torso && torso.body){
-    // tronco: sem mola de posição própria (o joint da cintura já cuida disso)
-    // - só corrige a orientação dele e contrabalança o peso dele na vertical.
-    applyBalanceSpring(torso.body, targetPos, targetQuat,
-      0, 0, kpRot*BALANCE_TORSO_ROT_MULT, kdRot*BALANCE_TORSO_ROT_MULT,
-      RAGDOLL_MASS_BY_PART.torso*9.8*upAssistMult,
+  if(!beingGrabbed){
+    applyBalanceSpring(hip.body, targetPos, targetQuat,
+      BALANCE_KP_POS, BALANCE_KD_POS, kpRot, kdRot, hipMass*9.8*upAssistMult,
       BALANCE_MAX_FORCE, maxTorque);
+
+    if(torso && torso.body){
+      // tronco: sem mola de posição própria (o joint da cintura já cuida disso)
+      // - só corrige a orientação dele e contrabalança o peso dele na vertical.
+      applyBalanceSpring(torso.body, targetPos, targetQuat,
+        0, 0, kpRot*BALANCE_TORSO_ROT_MULT, kdRot*BALANCE_TORSO_ROT_MULT,
+        RAGDOLL_MASS_BY_PART.torso*9.8*upAssistMult,
+        BALANCE_MAX_FORCE, maxTorque);
+    }
   }
 
   // PASSO 6b: só faz sentido checar "ele tombou" enquanto ele estava
